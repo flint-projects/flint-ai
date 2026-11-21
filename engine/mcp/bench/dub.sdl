@@ -1,0 +1,8 @@
+name "probe-mcp"
+targetType "executable"
+sourcePaths "source"
+importPaths "source"
+targetPath "build"
+targetName "probe-mcp"
+dflags "-preview=dip1000"
+dependency "flint:mcp" path="../../.."
