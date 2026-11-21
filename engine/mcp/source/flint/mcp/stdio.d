@@ -68,7 +68,8 @@ struct LineReader
     }
 }
 
-Error sendFrame(int file, int diagnostic, scope const(ubyte)[] message, scope ubyte[] compact, ref scope Context context) nothrow @nogc
+nothrow @nogc Error sendFrame(int file, int diagnostic, scope const(ubyte)[] message,
+        scope ubyte[] compact, ref scope Context context)
 {
     if (message.length > compact.length)
         return Error(Status.resourceExhausted, "MCP frame cannot fit its output buffer");
@@ -95,7 +96,8 @@ Error sendFrame(int file, int diagnostic, scope const(ubyte)[] message, scope ub
     return sendPhysicalFrame(file, diagnostic, message, context);
 }
 
-private Error sendPhysicalFrame(int file, int diagnostic, scope const(ubyte)[] message, ref scope Context context) nothrow @nogc
+nothrow @nogc private Error sendPhysicalFrame(int file, int diagnostic, scope const(ubyte)[] message,
+        ref scope Context context)
 {
     const sent = writePipe(file, diagnostic, message, context);
     return sent.code == Status.ok ? writePipe(file, diagnostic, cast(const(ubyte)[]) "\n", context) : sent;
@@ -147,7 +149,7 @@ final class StdioEndpoint
             if (frame.error.code == Status.timedOut && !context.cancelled())
                 continue;
             if ((!frame.ok() && frame.error.code != Status.invalidArgument
-                    && frame.error.code != Status.resourceExhausted) || frame.ok() && !frame.value)
+                    && frame.error.code != Status.resourceExhausted) || (frame.ok() && !frame.value))
                 return frame.error;
             scope message = line[0 .. frame.value];
             Identity id;

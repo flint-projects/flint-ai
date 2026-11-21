@@ -189,14 +189,14 @@ private Error format(scope const(ubyte)[] raw, FieldType kind, ref scope Encoded
             return Error.init;
         break;
     case FieldType.integer:
-        long number;
+        long[1] number;
         RequestArena noAllocations;
-        const parsed = decodeInto(raw, number, noAllocations);
+        const parsed = decodeInto(raw, number[0], noAllocations);
         enum bound = 9_007_199_254_740_991L;
-        if (parsed.code != Status.ok || number < -bound || number > bound)
+        if (parsed.code != Status.ok || number[0] < -bound || number[0] > bound)
             break;
         auto output = JsonWriter(cast(ubyte[]) header.value[]);
-        output.signedNumber(number);
+        output.signedNumber(number[0]);
         header.valueLength = output.length;
         return Error.init;
     case FieldType.boolean:

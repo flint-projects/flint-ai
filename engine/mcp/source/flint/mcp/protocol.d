@@ -10,7 +10,7 @@ import flint.mcp.jsonrpc : Emit, Envelope, Identity, Range, append, decodeEnvelo
 import flint.mcp.legacy : LegacyPhase, LegacySession, SessionKey, legacyRevision, validateInitialize;
 import flint.mcp.modern : Metadata, endModernResult, metadata, modernRevision, writeInfo;
 import flint.mcp.internal.registry : BeginTool, Registry;
-import flint.mcp.types : McpOptions, ProtocolRevision;
+import flint.mcp.types : McpOptions, ProtocolRevision, ToolResult;
 import flint.serde : DecodeOptions;
 import flint.serde.json_visit : visitJsonArray;
 import flint.serde.json_write : JsonWriter;
@@ -98,15 +98,19 @@ final class Protocol
         const meta = metadata(params);
         const verb = data.verb();
 
-        if (meta.declared || headers.method.length != 0 || headers.name.length != 0
-                || headers.release == modernRevision || verb == "server/discover")
+        if (modernOpening(meta, headers, verb))
             return modern(data, params, meta, headers, work, output, context, admitted);
-        if (supportsLegacy() && (verb == "initialize" || headers.session.length != 0 || !headers.http
-                && stdioPhase != LegacyPhase.initial))
+        if (supportsLegacy() && legacyOpening(headers, verb))
             return legacy(data, params, headers, work, output, context, admitted);
         if (!supportsModern())
             return fail(output, data.id, 400, invalidRequest, "Legacy initialize is required");
         return modern(data, params, meta, headers, work, output, context, admitted);
+    }
+
+    private bool legacyOpening(scope const ref Headers headers, scope const(char)[] verb) const scope pure nothrow @nogc
+    {
+        return verb == "initialize" || headers.session.length != 0 || (!headers.http
+                && stdioPhase != LegacyPhase.initial);
     }
 
     private Reply modern(scope const ref Envelope data, scope const(ubyte)[] params,
@@ -115,8 +119,7 @@ final class Protocol
     {
         if (!supportsModern())
             return fail(output, data.id, 400, methodNotFound, "Legacy initialize is required");
-        if (headers.invalid || headers.http && (headers.release.length == 0
-                || headers.method != data.verb() || meta.length != 0 && headers.release != meta.revision()))
+        if (headers.invalid || (headers.http && headerConflicts(data, meta, headers)))
             return fail(output, data.id, 400, headerMismatch, "MCP headers do not match the request");
         if (!meta.valid)
             return fail(output, data.id, 400, invalidParameters, "Missing or invalid MCP client metadata");
@@ -172,7 +175,7 @@ final class Protocol
             scope const ref Headers headers, ref scope RequestArena output) scope nothrow @nogc
     {
         if (!data.id.present || validateInitialize(params).code != Status.ok
-                || headers.session.length || !headers.http && stdioPhase != LegacyPhase.initial)
+                || headers.session.length || (!headers.http && stdioPhase != LegacyPhase.initial))
             return fail(output, data.id, 400, invalidParameters, "Invalid legacy initialize");
         if (!headers.http)
         {
@@ -270,8 +273,8 @@ final class Protocol
         });
     }
 
-    private Reply invoke(ref scope RequestArena work, ref scope RequestArena output,
-            scope const ref Call call, scope const(ubyte)[] params, ref Context context, scope BeginTool admitted) scope nothrow @nogc
+    nothrow @nogc private Reply invoke(ref scope RequestArena work, ref scope RequestArena output,
+            scope const ref Call call, scope const(ubyte)[] params, ref Context context, scope BeginTool admitted) scope
     {
         const location = member(params, "name");
         char[maxResource] name;
@@ -291,9 +294,14 @@ final class Protocol
             return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP tool arguments");
         if (!checked.result.ok())
             return toolError(output, call, checked.result.error.message);
+        return encodeToolResult(work, output, call, checked.result.value);
+    }
+
+    private Reply encodeToolResult(ref scope RequestArena work, ref scope RequestArena output,
+            scope const ref Call call, const ToolResult result) scope nothrow @nogc
+    {
         Status blocks;
         Status fieldsStatus;
-        const result = checked.result.value;
         auto response = complete(output, call, (ref scope JsonWriter writer) @safe nothrow @nogc {
             append(writer, result.isError ? `"isError":true,"content":` : `"isError":false,"content":`);
             if (result.content.length() == 0)
@@ -311,11 +319,11 @@ final class Protocol
         return response;
     }
 
-    private Reply toolError(ref scope RequestArena output, scope const ref Call call, string description) scope nothrow @nogc
+    nothrow @nogc private Reply toolError(ref scope RequestArena output, scope const ref Call call, string reason) scope
     {
         return complete(output, call, (ref scope JsonWriter writer) @safe nothrow @nogc {
             append(writer, `"isError":true,"content":[{"type":"text","text":`);
-            quote(writer, description.length ? description : "Tool failed");
+            quote(writer, reason.length ? reason : "Tool failed");
             append(writer, "}]");
         });
     }
@@ -330,7 +338,7 @@ final class Protocol
             return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP resource URI");
         const resource = registry.findResource(uri[0 .. length]);
         if (resource.action is null)
-            return fail(output, call.data.id, 404, -32002, "MCP resource not found");
+            return fail(output, call.data.id, 404, -32_002, "MCP resource not found");
         const result = resource.action(work, context);
         if (!result.ok())
             return fail(output, call.data.id, 500, internalError, "MCP resource provider failed");
@@ -350,18 +358,18 @@ final class Protocol
                 "Invalid output from MCP resource provider");
     }
 
-    private Reply complete(ref scope RequestArena output, scope const ref Call call, scope Emit writeFields) scope nothrow @nogc
+    nothrow @nogc private Reply complete(ref scope RequestArena arena, scope const ref Call call, scope Emit emit) scope
     {
-        const encoded = pack(output, limits.maxMessageBytes, (ref scope JsonWriter writer) @safe nothrow @nogc {
+        const encoded = pack(arena, limits.maxMessageBytes, (ref scope JsonWriter writer) @safe nothrow @nogc {
             writeId(writer, call.data.id);
             append(writer, `,"result":{`);
             if (call.modern)
                 append(writer, `"resultType":"complete"`);
-            if (writeFields !is null)
+            if (emit !is null)
             {
                 if (call.modern)
                     append(writer, ",");
-                writeFields(writer);
+                emit(writer);
             }
             if (call.modern)
                 endModernResult(writer, limits.name, limits.versionString);
@@ -369,11 +377,12 @@ final class Protocol
                 append(writer, "}}");
         });
         if (!encoded.ok())
-            return fail(output, call.data.id, 500, internalError, "MCP result exceeds its output limit");
+            return fail(arena, call.data.id, 500, internalError, "MCP result exceeds its arena limit");
         return Reply(200, encoded.value);
     }
 
-    private Reply versionFault(ref scope RequestArena output, scope const ref Identity id, scope const(char)[] requested) scope nothrow @nogc
+    nothrow @nogc private Reply versionFault(ref scope RequestArena output, scope const ref Identity id,
+            scope const(char)[] requested) scope
     {
         return fail(output, id, 400, unsupportedVersion, "Unsupported MCP protocol version",
                 (ref scope JsonWriter writer) @safe nothrow @nogc {
@@ -414,12 +423,27 @@ final class Protocol
     }
 }
 
-private Status appendChecked(ref scope RequestArena arena, Buffer handle, ref scope JsonWriter writer, bool object) nothrow @nogc
+nothrow @nogc private bool modernOpening(scope const ref Metadata meta,
+        scope const ref Headers headers, scope const(char)[] verb) pure
+{
+    return meta.declared || headers.method.length != 0 || headers.name.length != 0
+        || headers.release == modernRevision || verb == "server/discover";
+}
+
+nothrow @nogc private bool headerConflicts(scope const ref Envelope data, scope const ref Metadata meta,
+        scope const ref Headers headers) pure
+{
+    return headers.release.length == 0 || headers.method != data.verb() || (meta.length != 0
+            && headers.release != meta.revision());
+}
+
+nothrow @nogc private Status appendChecked(ref scope RequestArena arena, Buffer handle,
+        ref scope JsonWriter writer, bool object)
 {
     Status result;
     const code = arena.read(handle, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
         if (object ? !isObject(bytes) : visitJsonArray(bytes,
-            (scope const(ubyte)[] unused)@safe nothrow @nogc => Error.init).code != Status.ok)
+            (scope const(ubyte)[])@safe nothrow @nogc => Error.init).code != Status.ok)
             result = Status.invalidArgument;
         else
             writer.append(bytes);

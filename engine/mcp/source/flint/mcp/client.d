@@ -88,7 +88,8 @@ struct McpClient
     }
 
     /// Return the page selected by the server's previous nextCursor.
-    Result!Buffer listToolsPage(scope const(char)[] cursor, ref scope RequestArena arena, ref Context context) nothrow @nogc
+    nothrow @nogc Result!Buffer listToolsPage(scope const(char)[] cursor, ref scope RequestArena arena,
+            ref Context context)
     {
         if (driver is null)
             return Result!Buffer(Buffer.init, closed());
@@ -104,7 +105,8 @@ struct McpClient
     }
 
     /// Return a resource page selected by the server's previous nextCursor.
-    Result!Buffer listResourcesPage(scope const(char)[] cursor, ref scope RequestArena arena, ref Context context) nothrow @nogc
+    nothrow @nogc Result!Buffer listResourcesPage(scope const(char)[] cursor,
+            ref scope RequestArena arena, ref Context context)
     {
         if (driver is null)
             return Result!Buffer(Buffer.init, closed());
@@ -119,7 +121,7 @@ struct McpClient
     {
         if (driver is null)
             return Result!ToolResult(ToolResult.init, closed());
-        if (!validText(name, maxMethod) || arguments.length && !isObject(arguments))
+        if (!validText(name, maxMethod) || (arguments.length && !isObject(arguments)))
             return Result!ToolResult(ToolResult.init, malformed("invalid MCP tool name or arguments"));
         return driver.call(name, arguments, arena, context);
     }
@@ -231,31 +233,39 @@ private final class ClientDriver
         auto probe = !url.length && settings.acceptLegacy
             ? context.withDeadline(Deadline.afterMillis(750)) : context.withDeadline(Deadline.none());
         const first = transact("server/discover", null, null, null, null, false, probe);
-        const document = first.envelope.result.get(received[0 .. first.length]);
-        if (first.error.code == Status.ok && document.length != 0 && namedVersion(document,
-                "supportedVersions", modernRevision) && objectField(document, "capabilities"))
+        if (first.error.code == Status.ok && supportsDiscovery(first))
         {
             ready = true;
             return Error.init;
         }
 
-        const error = first.envelope.fault.get(received[0 .. first.length]);
-        const code = faultNumber(error);
+        const fault = first.envelope.fault.get(received[0 .. first.length]);
+        const code = faultNumber(fault);
         if (code == unsupportedVersion)
         {
-            const details = member(error, "data");
-            if (settings.acceptLegacy && details.ok() && namedVersion(details.value.get(error),
-                    "supported", legacyRevision) && !namedVersion(details.value.get(error),
-                    "supported", modernRevision))
+            if (settings.acceptLegacy && advertisesLegacy(fault))
                 return connectLegacy(context);
             return Error(Status.unsupported, "MCP peer has no supported modern protocol version");
         }
         if (isModernFault(code) || !settings.acceptLegacy || context.cancelled())
             return checkedError(first, "MCP modern protocol negotiation failed");
-        if ((!url.length && (code != 0 || first.error.code == Status.timedOut))
-                || (first.status >= 400 && first.status < 500 && first.status != 401 && first.status != 403))
+        if (legacyFallback(first, code))
             return connectLegacy(context);
         return checkedError(first, "MCP server did not return a discovery result");
+    }
+
+    private bool supportsDiscovery(scope const ref ClientReply first) scope nothrow @nogc
+    {
+        const document = first.envelope.result.get(received[0 .. first.length]);
+        return document.length != 0 && namedVersion(document, "supportedVersions", modernRevision)
+            && objectField(document, "capabilities");
+    }
+
+    private bool legacyFallback(scope const ref ClientReply reply, int code) const scope pure nothrow @nogc
+    {
+        if (!url.length)
+            return code != 0 || reply.error.code == Status.timedOut;
+        return reply.status >= 400 && reply.status < 500 && reply.status != 401 && reply.status != 403;
     }
 
     private Error connectLegacy(ref Context context) nothrow @nogc
@@ -286,7 +296,8 @@ private final class ClientDriver
                     checked);
     }
 
-    Result!ToolResult call(string name, scope const(ubyte)[] arguments, ref scope RequestArena arena, ref Context context) nothrow @nogc
+    nothrow @nogc Result!ToolResult call(string name, scope const(ubyte)[] arguments,
+            ref scope RequestArena arena, ref Context context)
     {
         const held = enter();
         if (held.code != Status.ok)
@@ -343,29 +354,13 @@ private final class ClientDriver
             if (accepted.code != Status.ok)
                 return accepted;
             const document = list.envelope.result.get(received[0 .. list.length]);
-            const tools = member(document, "tools");
-            if (!tools.ok() || !tools.value.present())
-                return malformed("MCP tools/list did not return tool definitions");
-
-            bool found;
-            const walked = visitJsonArray(tools.value.get(document), (scope const(ubyte)[] entry) @safe nothrow @nogc {
-                const name = member(entry, "name");
-                if (!name.ok() || !isString(name.value.get(entry), tool))
-                    return Error.init;
-                if (found)
-                    return malformed("duplicate MCP tool definition");
-                const schema = member(entry, "inputSchema");
-                if (!schema.ok() || !schema.value.present())
-                    return malformed("MCP tool definition did not include an input schema");
-                found = true;
-                return rules.readSchema(schema.value.get(entry));
-            });
-            if (walked.code != Status.ok)
-                return walked;
+            const walked = scanTools(document, tool);
+            if (!walked.ok())
+                return walked.error;
             const next = member(document, "nextCursor");
             if (!next.ok())
                 return next.error;
-            if (found || !next.value.present())
+            if (walked.value || !next.value.present())
             {
                 cachedTool = tool;
                 return Error.init;
@@ -374,6 +369,28 @@ private final class ClientDriver
                 return malformed("MCP tools/list returned an invalid cursor");
         }
         return Error(Status.resourceExhausted, "MCP tools/list pagination limit reached");
+    }
+
+    private Result!bool scanTools(scope const(ubyte)[] document, string tool) nothrow @nogc
+    {
+        const tools = member(document, "tools");
+        if (!tools.ok() || !tools.value.present())
+            return Result!bool(false, malformed("MCP tools/list did not return tool definitions"));
+
+        bool found;
+        const checked = visitJsonArray(tools.value.get(document), (scope const(ubyte)[] entry) @safe nothrow @nogc {
+            const name = member(entry, "name");
+            if (!name.ok() || !isString(name.value.get(entry), tool))
+                return Error.init;
+            if (found)
+                return malformed("duplicate MCP tool definition");
+            const schema = member(entry, "inputSchema");
+            if (!schema.ok() || !schema.value.present())
+                return malformed("MCP tool definition did not include an input schema");
+            found = true;
+            return rules.readSchema(schema.value.get(entry));
+        });
+        return Result!bool(found, checked);
     }
 
     private Error enter() nothrow @nogc
@@ -392,7 +409,7 @@ private final class ClientDriver
         {
             const document = result.envelope.result.get(received[0 .. result.length]);
             const flavour = member(document, "resultType");
-            if (!flavour.ok() || flavour.value.present() && !isString(flavour.value.get(document), "complete"))
+            if (!flavour.ok() || (flavour.value.present() && !isString(flavour.value.get(document), "complete")))
                 return Error(Status.unsupported, "MCP result requires an unsupported input round");
         }
         return Error.init;
@@ -471,8 +488,8 @@ private final class ClientDriver
         return borrowed == Status.ok ? reply : failed(Error(borrowed, "MCP sent buffer was not available"));
     }
 
-    private void emitParams(ref scope JsonWriter output, string method, string key,
-            scope const(char)[] value, scope const(ubyte)[] args, scope const(char)[] cursor, scope const(ubyte)[] extra) nothrow @nogc
+    nothrow @nogc private void emitParams(ref scope JsonWriter output, string method, string key,
+            scope const(char)[] value, scope const(ubyte)[] args, scope const(char)[] page, scope const(ubyte)[] tail)
     {
         if (method == "notifications/initialized")
             return;
@@ -482,24 +499,25 @@ private final class ClientDriver
             writeClientMeta(output, settings.elicitation !is null);
         if (method == "initialize")
             writeInitialize(output);
-        if (key.length != 0 || cursor.length != 0)
+        if (key.length != 0 || page.length != 0)
         {
             if (modern)
                 append(output, ",");
-            quote(output, cursor.length ? "cursor" : key);
+            quote(output, page.length ? "cursor" : key);
             append(output, ":");
-            quote(output, cursor.length ? cursor : value);
+            quote(output, page.length ? page : value);
         }
         if (args.length != 0)
         {
             append(output, `,"arguments":`);
             output.append(args);
         }
-        output.append(extra);
+        output.append(tail);
         append(output, "}");
     }
 
-    private ClientReply sendStdio(scope const(ubyte)[] body, scope const ref Identity expected, ref Context context) nothrow @nogc
+    nothrow @nogc private ClientReply sendStdio(scope const(ubyte)[] body,
+            scope const ref Identity expected, ref Context context)
     {
         const sent = sendFrame(child.input, child.diagnostic, body, compact, context);
         if (sent.code != Status.ok)
@@ -520,8 +538,7 @@ private final class ClientDriver
             const parsed = decodeEnvelope(received[0 .. line.value], settings.maxMessageBytes);
             if (!parsed.ok())
                 return failed(parsed.error);
-            if (!parsed.value.id.present && parsed.value.methodLength != 0
-                    || parsed.value.id.present && !parsed.value.id.quoted && parsed.value.id.number < expected.number)
+            if (earlierReply(parsed.value, expected))
                 continue;
             return correlate(parsed, line.value, expected, 200);
         }
@@ -532,7 +549,6 @@ private final class ClientDriver
     {
         auto scratch = RequestArena(response);
         const modern = release == ProtocolRevision.modern20260728;
-
         size_t nameLength;
         if (modern && name.length && method != "tools/list" && method != "resources/list"
                 && !encodeHeader(name, encodedName[], nameLength))
@@ -588,19 +604,7 @@ private final class ClientDriver
         if (transferResult.headers != Buffer.init)
         {
             const headers = arena.read(transferResult.headers, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
-                const media = responseHeader(bytes, "content-type");
-                const value = cast(const(char)[]) media.get(bytes);
-                json = includes(value, "application/json", ';');
-                events = includes(value, "text/event-stream", ';');
-                if (method == "initialize" && status < 300)
-                {
-                    const token = responseHeader(bytes, "mcp-session-id").get(bytes);
-                    if (validSession(token))
-                    {
-                        sessionLength = token.length;
-                        session[0 .. sessionLength] = cast(const(char)[]) token;
-                    }
-                }
+                inspectHeaders(bytes, method == "initialize" && status < 300, json, events);
             });
             if (headers != Status.ok)
                 return failed(Error(headers, "MCP HTTP headers expired"), status);
@@ -614,7 +618,25 @@ private final class ClientDriver
         return borrowed == Status.ok ? parsed : failed(Error(borrowed, "MCP HTTP response body expired"), status);
     }
 
-    private ClientReply jsonReply(scope const(ubyte)[] bytes, scope const ref Identity expected, ushort status) nothrow @nogc
+    nothrow @nogc private void inspectHeaders(scope const(ubyte)[] bytes, bool initialization,
+            out bool json, out bool events)
+    {
+        const contentType = responseHeader(bytes, "content-type");
+        const value = cast(const(char)[]) contentType.get(bytes);
+        json = includes(value, "application/json", ';');
+        events = includes(value, "text/event-stream", ';');
+        if (!initialization)
+            return;
+        const token = responseHeader(bytes, "mcp-session-id").get(bytes);
+        if (validSession(token))
+        {
+            sessionLength = token.length;
+            session[0 .. sessionLength] = cast(const(char)[]) token;
+        }
+    }
+
+    nothrow @nogc private ClientReply jsonReply(scope const(ubyte)[] bytes, scope const ref Identity expected,
+            ushort status)
     {
         if (bytes.length > settings.maxMessageBytes)
             return failed(Error(Status.resourceExhausted, "MCP HTTP envelope exceeded its limit"), status);
@@ -622,22 +644,16 @@ private final class ClientDriver
         return correlate(decodeEnvelope(bytes, settings.maxMessageBytes), bytes.length, expected, status);
     }
 
-    private ClientReply eventReply(scope const(ubyte)[] stream, scope const ref Identity expected, ushort status) nothrow @nogc
+    nothrow @nogc private ClientReply eventReply(scope const(ubyte)[] stream,
+            scope const ref Identity expected, ushort status)
     {
-        size_t start;
         size_t length;
         bool data;
-        while (start < stream.length)
+        EventLines lines;
+        Range lineRange;
+        while (lines.next(stream, lineRange))
         {
-            size_t end = start;
-            while (end < stream.length && stream[end] != '\n' && stream[end] != '\r')
-                ++end;
-            const line = stream[start .. end];
-            start = end + 1;
-            if (end + 1 < stream.length && stream[end] == '\r' && stream[end + 1] == '\n')
-                ++start;
-            if (end == stream.length)
-                break;
+            const line = lineRange.get(stream);
             if (!line.length)
             {
                 if (data)
@@ -697,19 +713,8 @@ private final class ClientDriver
     {
         if (busy)
             return Error(Status.conflict, "MCP request is still active");
-        if (url.length && ready && release == ProtocolRevision.legacy20251125 && sessionLength && !context.cancelled())
-        {
-            scope const HttpStreamField[] fields = [
-                HttpStreamField("mcp-protocol-version", legacyRevision),
-                HttpStreamField("mcp-session-id", session[0 .. sessionLength]),
-                HttpStreamField("authorization", settings.authorization),
-            ];
-            scope const view = HttpRequestView(HttpMethod.delete_, url,
-                    fields[0 .. settings.authorization.length ? 3 : 2]);
-            auto arena = RequestArena(response);
-            http.sendView(view, arena, context);
-            ready = false;
-        }
+        if (legacySessionOpen() && !context.cancelled())
+            endLegacySession(context);
         const closed = url.length ? http.close() : child.stop(context);
         if (closed.code != Status.timedOut && closed.code != Status.conflict)
         {
@@ -721,6 +726,59 @@ private final class ClientDriver
         }
         return closed;
     }
+
+    private bool legacySessionOpen() const scope pure nothrow @nogc
+    {
+        return url.length && ready && release == ProtocolRevision.legacy20251125 && sessionLength;
+    }
+
+    private void endLegacySession(ref Context context) nothrow @nogc
+    {
+        scope const HttpStreamField[] fields = [
+            HttpStreamField("mcp-protocol-version", legacyRevision),
+            HttpStreamField("mcp-session-id", session[0 .. sessionLength]),
+            HttpStreamField("authorization", settings.authorization),
+        ];
+        scope const view = HttpRequestView(HttpMethod.delete_, url, fields[0 .. settings.authorization.length ? 3 : 2]);
+        auto arena = RequestArena(response);
+        http.sendView(view, arena, context);
+        ready = false;
+    }
+
+}
+
+private struct EventLines
+{
+    size_t start;
+    bool next(scope const(ubyte)[] stream, out Range line) nothrow @nogc
+    {
+        size_t end = start;
+        while (end < stream.length && stream[end] != '\n' && stream[end] != '\r')
+            ++end;
+        if (end == stream.length)
+            return false;
+        line = Range(start, end - start);
+        start = end + 1;
+        if (start < stream.length && stream[end] == '\r' && stream[start] == '\n')
+            ++start;
+        return true;
+    }
+}
+
+private bool earlierReply(scope const ref Envelope reply, scope const ref Identity expected) pure nothrow @nogc
+{
+    if (!reply.id.present)
+        return reply.methodLength != 0;
+    return !reply.id.quoted && reply.id.number < expected.number;
+}
+
+private bool advertisesLegacy(scope const(ubyte)[] fault) nothrow @nogc
+{
+    const details = member(fault, "data");
+    if (!details.ok())
+        return false;
+    const versions = details.value.get(fault);
+    return namedVersion(versions, "supported", legacyRevision) && !namedVersion(versions, "supported", modernRevision);
 }
 
 private Error closed() pure nothrow @nogc
@@ -733,12 +791,13 @@ private ClientReply failed(Error error, ushort status = 0) pure nothrow @nogc
     return ClientReply(Envelope.init, 0, status, error);
 }
 
-private ClientReply correlate(Result!Envelope parsed, size_t length, scope const ref Identity expected, ushort status) nothrow @nogc
+nothrow @nogc private ClientReply correlate(Result!Envelope parsed, size_t length,
+        scope const ref Identity expected, ushort status)
 {
     if (!parsed.ok())
         return failed(parsed.error, status);
-    if (parsed.value.methodLength || parsed.value.id != expected && !(status >= 400
-            && parsed.value.fault.present() && !parsed.value.id.present))
+    const uncorrelatedError = status >= 400 && parsed.value.fault.present() && !parsed.value.id.present;
+    if (parsed.value.methodLength || (!parsed.value.id.matches(expected) && !uncorrelatedError))
         return failed(malformed("MCP reply does not match request ID"), status);
     return ClientReply(parsed.value, length, status);
 }
@@ -773,8 +832,9 @@ private int faultNumber(scope const(ubyte)[] body) nothrow @nogc
     if (!code.ok())
         return 0;
     RequestArena scratch;
-    int number;
-    return decodeInto(code.value.get(body), number, scratch).code == Status.ok ? number : 0;
+    int[1] number;
+    const decoded = decodeInto(code.value.get(body), number[0], scratch);
+    return decoded.code == Status.ok ? number[0] : 0;
 }
 
 private bool isModernFault(int code) pure nothrow @nogc
@@ -787,10 +847,10 @@ private Result!ToolResult readToolResult(scope const(ubyte)[] wire, ref scope Re
     const content = member(wire, "content");
     const fields = member(wire, "structuredContent");
     const flag = member(wire, "isError");
-    if (!content.ok() || !fields.ok() || !flag.ok() || !content.value.present() && !fields.value.present())
+    if (!content.ok() || !fields.ok() || !flag.ok() || (!content.value.present() && !fields.value.present()))
         return Result!ToolResult(ToolResult.init, malformed("malformed MCP tool result"));
     const blocks = content.value.present() ? content.value.get(wire) : cast(const(ubyte)[]) "[]";
-    if (visitJsonArray(blocks, (scope const(ubyte)[] value)@safe nothrow @nogc => Error.init).code != Status.ok)
+    if (visitJsonArray(blocks, (scope const(ubyte)[])@safe nothrow @nogc => Error.init).code != Status.ok)
         return Result!ToolResult(ToolResult.init, malformed("malformed MCP result content"));
     const structured = fields.value.get(wire);
     if (structured.length && !isObject(structured))
@@ -803,6 +863,12 @@ private Result!ToolResult readToolResult(scope const(ubyte)[] wire, ref scope Re
         if (decoded.code != Status.ok)
             return Result!ToolResult(ToolResult.init, decoded);
     }
+    return copyToolContent(blocks, structured, output, arena);
+}
+
+private Result!ToolResult copyToolContent(scope const(ubyte)[] blocks, scope const(ubyte)[] structured,
+        ToolResult output, ref scope RequestArena arena) nothrow @nogc
+{
     if (blocks.length + structured.length + 16 > arena.stats().capacity - arena.stats().used)
         return Result!ToolResult(ToolResult.init, Error(Status.outOfMemory, "MCP result exceeds caller storage"));
     const copied = arena.copyIn(blocks);
@@ -840,16 +906,22 @@ private Range responseHeader(scope const(ubyte)[] bytes, string name) pure nothr
         {
             if (selected.present())
                 return Range.init;
-            size_t value = colon + 1;
-            while (value < text.length && (text[value] == ' ' || text[value] == '\t'))
-                ++value;
-            while (text.length > value && (text[$ - 1] == ' ' || text[$ - 1] == '\t'))
-                text = text[0 .. $ - 1];
-            selected = Range(start + value, text.length - value);
+            const value = fieldValue(text, colon + 1);
+            selected = Range(start + value.offset, value.length);
         }
         start = end + 1;
     }
     return selected;
+}
+
+private Range fieldValue(scope const(ubyte)[] text, size_t value) pure nothrow @nogc
+{
+    while (value < text.length && (text[value] == ' ' || text[value] == '\t'))
+        ++value;
+    size_t end = text.length;
+    while (end > value && (text[end - 1] == ' ' || text[end - 1] == '\t'))
+        --end;
+    return Range(value, end - value);
 }
 
 private bool validSession(scope const(ubyte)[] session) pure nothrow @nogc
@@ -866,8 +938,10 @@ private bool validSession(scope const(ubyte)[] session) pure nothrow @nogc
 
 private bool validOptions(scope const ref McpClientOptions options) pure nothrow @nogc
 {
-    if (options.revision > ProtocolRevision.legacy20251125 || options.maxMessageBytes < 1024
-            || options.maxMessageBytes > maxMessage || options.maxInputRounds > 8 || options.authorization.length > 4096)
+    enum maximumAuthorizationBytes = 4_096;
+    if (options.revision > ProtocolRevision.legacy20251125 || options.authorization.length > maximumAuthorizationBytes)
+        return false;
+    if (options.maxMessageBytes < 1024 || options.maxMessageBytes > maxMessage || options.maxInputRounds > 8)
         return false;
     foreach (character; options.authorization)
     {
@@ -881,38 +955,54 @@ private bool validEndpoint(scope const(char)[] endpoint) pure nothrow @nogc
 {
     if (endpoint.length > 4096)
         return false;
-    auto https = endpoint.length > 8 && endpoint[0 .. 8] == "https://";
+    const https = endpoint.length > 8 && endpoint[0 .. 8] == "https://";
     if (!https && !(endpoint.length > 7 && endpoint[0 .. 7] == "http://"))
         return false;
+    if (!validEndpointBytes(endpoint))
+        return false;
+    const authority = endpoint[https ? 8 : 7 .. $];
+    const size = authorityLength(authority);
+    return size > 0 && (https || localAuthority(authority[0 .. size]));
+}
+
+private size_t authorityLength(scope const(char)[] endpoint) pure nothrow @nogc
+{
+    size_t end;
+    while (end < endpoint.length && endpoint[end] != '/' && endpoint[end] != '?')
+    {
+        if (endpoint[end] == '@')
+            return 0;
+        ++end;
+    }
+    return end;
+}
+
+private bool validEndpointBytes(scope const(char)[] endpoint) pure nothrow @nogc
+{
     foreach (character; endpoint)
     {
         if (character <= ' ' || character == 127 || character == '#' || character == '\\')
             return false;
     }
-    const origin = endpoint[https ? 8 : 7 .. $];
-    size_t end;
-    while (end < origin.length && origin[end] != '/' && origin[end] != '?')
-    {
-        if (origin[end] == '@')
-            return false;
-        ++end;
-    }
-    if (end == 0)
-        return false;
-    if (https)
+    return true;
+}
+
+private bool localAuthority(scope const(char)[] authority) pure nothrow @nogc
+{
+    if (authority.length >= 9 && authority[0 .. 9] == "127.0.0.1")
+        return validLoopbackPort(authority[9 .. $]);
+    if (authority.length >= 5 && authority[0 .. 5] == "[::1]")
+        return validLoopbackPort(authority[5 .. $]);
+    return false;
+}
+
+private bool validLoopbackPort(scope const(char)[] suffix) pure nothrow @nogc
+{
+    if (suffix.length == 0)
         return true;
-    auto host = origin[0 .. end];
-    if (host.length >= 9 && host[0 .. 9] == "127.0.0.1")
-        host = host[9 .. $];
-    else if (host.length >= 5 && host[0 .. 5] == "[::1]")
-        host = host[5 .. $];
-    else
+    if (suffix[0] != ':' || suffix.length < 2 || suffix.length > 6)
         return false;
-    if (host.length == 0)
-        return true;
-    if (host[0] != ':' || host.length < 2 || host.length > 6)
-        return false;
-    foreach (character; host[1 .. $])
+    foreach (character; suffix[1 .. $])
     {
         if (character < '0' || character > '9')
             return false;

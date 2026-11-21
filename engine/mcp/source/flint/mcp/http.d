@@ -129,108 +129,106 @@ final class HttpEndpoint
         if (!queued.ok())
             return Result!Response(Response(503));
         const waited = waitFor(queued.value, context.cancellation);
-        if (waited.code != Status.ok)
+        if (!waited.ok())
         {
             operations.detach(queued.value, true);
-            return Result!Response(Response.init, waited);
+            return Result!Response(Response.init, waited.error);
         }
         ushort status;
         const result = operations.consume(queued.value, (scope const ref Reply reply,
-                scope const(ubyte)[] unused) @safe nothrow @nogc {
-            status = reply.status;
-            return Error.init;
-        });
+                scope const(ubyte)[]) @safe nothrow @nogc { status = reply.status; return Error.init; });
         return Result!Response(Response(status), result);
     }
 
-    private Error post(ref scope Request request, ref scope RequestContext context, scope StreamToken stream) nothrow @nogc
+    nothrow @nogc private Error post(ref scope Request request, ref scope RequestContext context,
+            scope StreamToken stream)
     {
         if (!authorized(request, context))
             return empty(stream, 403, context.cancellation);
-        scope Field!256 media;
-        scope Field!2048 accept;
-        if (!media.load(request, context, "content-type") || !media.present
-                || !includes(media.value(), "application/json", ';'))
-            return empty(stream, 415, context.cancellation);
-        if (!accept.load(request, context, "accept"))
-            return empty(stream, 406, context.cancellation);
-        const acceptsJson = !accept.present || includes(accept.value(), "application/json")
-            || includes(accept.value(), "*/*");
-        const acceptsEvents = includes(accept.value(), "text/event-stream");
-        if (!acceptsJson && !acceptsEvents)
-            return empty(stream, 406, context.cancellation);
+        const media = negotiateResponse(request, context);
+        if (media.rejection)
+            return empty(stream, media.rejection, context.cancellation);
+        scope Inbound incoming;
+        incoming.load(request, context);
+        const admitted = queueEntity(request, context, incoming);
+        if (admitted.immediate)
+            return empty(stream, admitted.immediate, context.cancellation);
+        if (admitted.error.code != Status.ok)
+            return admitted.error;
 
-        scope Field!64 release;
-        scope Field!128 method;
-        scope Field!1536 routeName;
-        scope Field!64 session;
-        const valid = release.load(request, context, "mcp-protocol-version") && method.load(request,
-                context, "mcp-method") && routeName.load(request, context, "mcp-name")
-            && session.load(request, context, "mcp-session-id");
-        scope const headers = Headers(true, !valid, release.value(), method.value(),
-                routeName.value(), session.value());
-        const legacy = release.value() != modernRevision && !method.present;
-        Context detached;
-        auto parent = legacy ? detached : context.cancellation;
-        Result!uint queued;
-        bool notification;
+        const events = media.events && (!media.json || incoming.method.value() == "tools/call");
+        return finishEntity(stream, context.cancellation, admitted.position, events, incoming.legacy());
+    }
+
+    private Admission queueEntity(ref scope Request request, ref scope RequestContext context,
+            scope const ref Inbound incoming) nothrow @nogc
+    {
         const entity = request.body();
         if (!entity.ok())
-            return entity.error;
+            return Admission(0, 0, entity.error);
+        scope const headers = incoming.view();
+        const legacy = incoming.legacy();
+        Context parent;
+        if (!legacy)
+            parent = context.cancellation;
+        Admission admitted;
         const borrowed = context.arena.read(entity.value, (scope const(ubyte)[] message) @safe nothrow @nogc {
-            Identity id;
-            if (valid && legacy && release.value() == legacyRevision && session.present
-                && cancellationRequest(message, limits.maxMessageBytes, id))
+            if (acceptCancellation(message, incoming))
             {
-                if (id.present)
-                    operations.cancel(id, session.value());
-                notification = true;
+                admitted.immediate = 202;
+                return;
             }
-            else
-            {
-                const submitted = operations.submit(message, headers, parent, legacy);
-                queued.value = submitted.value;
-                queued.error.code = submitted.error.code;
-            }
+            const submitted = operations.submit(message, headers, parent, legacy);
+            admitted.position = submitted.value;
+            if (!submitted.ok())
+                admitted.immediate = 503;
         });
         if (borrowed != Status.ok)
-            return Error(borrowed, "MCP HTTP request body lifetime ended");
-        if (notification)
-            return empty(stream, 202, context.cancellation);
-        if (!queued.ok())
-            return empty(stream, 503, context.cancellation);
+            admitted.error = Error(borrowed, "MCP HTTP request body lifetime ended");
+        return admitted;
+    }
 
-        const position = queued.value;
-        const events = acceptsEvents && (!acceptsJson || method.value() == "tools/call");
-        bool started;
-        const waited = waitFor(position, context.cancellation, stream, events && !legacy, started);
-        if (waited.code != Status.ok)
+    private bool acceptCancellation(scope const(ubyte)[] message, scope const ref Inbound incoming) nothrow @nogc
+    {
+        if (incoming.invalid || !incoming.legacy() || incoming.release.value() != legacyRevision
+                || !incoming.session.present)
+            return false;
+        Identity id;
+        if (!cancellationRequest(message, limits.maxMessageBytes, id))
+            return false;
+        if (id.present)
+            operations.cancel(id, incoming.session.value());
+        return true;
+    }
+
+    private Error finishEntity(scope StreamToken stream, ref scope Context context, uint position,
+            bool events, bool legacy) nothrow @nogc
+    {
+        const waited = waitFor(position, context, stream, events && !legacy);
+        if (!waited.ok())
         {
             operations.detach(position, !legacy);
-            return waited;
+            return waited.error;
         }
-        return operations.consume(position, (scope const ref Reply reply, scope const(ubyte)[] bytes) @safe nothrow @nogc {
-            return send(stream, reply, bytes, context.cancellation, events && (started || reply.status == 200), started);
+        const started = waited.value;
+        return operations.consume(position, (scope const ref Reply reply, scope const(ubyte)[] payload) {
+
+            return send(stream, reply, payload, context, events && (started || reply.status == 200), started);
         });
     }
 
-    private Error waitFor(uint position, ref scope Context context) nothrow @nogc
+    private Result!bool waitFor(uint position, ref scope Context context,
+            scope StreamToken stream = StreamToken.init, bool beginEvents = false) nothrow @nogc
     {
         bool started;
-        return waitFor(position, context, StreamToken.init, false, started);
-    }
-
-    private Error waitFor(uint position, ref scope Context context, scope StreamToken stream,
-            bool beginEvents, out bool started) nothrow @nogc
-    {
         auto heartbeatAt = Deadline.afterMillis(10_000);
         for (;;)
         {
             const checked = context.check();
             if (checked.code != Status.ok)
-                return checked;
+                return Result!bool(false, checked);
             if (operations.complete(position))
-                return Error.init;
+                return Result!bool(started);
             if (beginEvents && !started && operations.entered(position))
             {
                 const begun = stream.begin(200, [
@@ -238,7 +236,7 @@ final class HttpEndpoint
                     StreamField("x-accel-buffering", "no")
                 ], context);
                 if (begun.code != Status.ok)
-                    return begun;
+                    return Result!bool(started, begun);
                 started = true;
                 heartbeatAt = Deadline.afterMillis(0);
             }
@@ -246,14 +244,70 @@ final class HttpEndpoint
             {
                 const heartbeat = stream.send(cast(const(ubyte)[]) ": working\n\n", context);
                 if (heartbeat.code != Status.ok)
-                    return heartbeat;
+                    return Result!bool(started, heartbeat);
                 heartbeatAt = Deadline.afterMillis(10_000);
             }
             const waited = waitUntil(Deadline(Deadline.afterMillis(0).monotonicNanoseconds + 100_000));
             if (waited.code != Status.ok)
-                return waited;
+                return Result!bool(started, waited);
         }
     }
+}
+
+private struct Admission
+{
+    uint position;
+    ushort immediate;
+    Error error;
+}
+
+private struct Inbound
+{
+    Field!64 release;
+    Field!128 method;
+    Field!1536 routeName;
+    Field!64 session;
+    bool invalid;
+
+    void load(ref scope Request request, ref scope RequestContext context) scope nothrow @nogc
+    {
+        invalid = !release.load(request, context, "mcp-protocol-version") || !method.load(request,
+                context, "mcp-method") || !routeName.load(request, context, "mcp-name")
+            || !session.load(request, context, "mcp-session-id");
+    }
+
+    Headers view() const return pure nothrow @nogc
+    {
+        return Headers(true, invalid, release.value(), method.value(), routeName.value(), session.value());
+    }
+
+    bool legacy() const scope pure nothrow @nogc
+    {
+        return release.value() != modernRevision && !method.present;
+    }
+}
+
+private struct ResponseMedia
+{
+    bool json;
+    bool events;
+    ushort rejection;
+}
+
+private ResponseMedia negotiateResponse(ref scope Request request, ref scope RequestContext context) nothrow @nogc
+{
+    scope Field!256 media;
+    if (!media.load(request, context, "content-type") || !media.present
+            || !includes(media.value(), "application/json", ';'))
+        return ResponseMedia(false, false, 415);
+    scope Field!2048 accept;
+    if (!accept.load(request, context, "accept"))
+        return ResponseMedia(false, false, 406);
+
+    const value = accept.value();
+    const json = !accept.present || includes(value, "application/json") || includes(value, "*/*");
+    const events = includes(value, "text/event-stream");
+    return ResponseMedia(json, events, json || events ? 0 : 406);
 }
 
 private struct Field(size_t capacity)

@@ -54,7 +54,8 @@ unittest
     Context context;
     const headers = Headers.init;
     enum list = `{"jsonrpc":"2.0","id":"list","method":"tools/list","params":{`;
-    enum meta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`;
+    enum meta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",`
+        ~ `"io.modelcontextprotocol/clientCapabilities":{}}`;
     const request = cast(const(ubyte)[])(list ~ meta ~ "}}");
     const response = first.dispatch(request, headers, work, output, context);
     assert(response.status == 200 && response.error.code == Status.ok);
@@ -68,7 +69,7 @@ unittest
         const cursor = member(wire, "nextCursor");
         const literal = cursor.value.get(wire);
         assert(cursor.ok() && literal.length > 2);
-        length = literal.length - 2;
+        length = literal[1 .. $ - 1].length;
         joined[0 .. length] = cast(const(char)[]) literal[1 .. $ - 1];
     });
     assert(status == Status.ok);

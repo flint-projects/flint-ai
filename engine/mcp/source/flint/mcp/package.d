@@ -102,15 +102,17 @@ private bool validOptions(scope const ref McpOptions options) nothrow @nogc
         if (!validText(entry, 4096))
             return false;
     }
-    if (options.transport == Transport.streamableHttp)
+    return options.transport != Transport.streamableHttp || validPath(options.path);
+}
+
+private bool validPath(string path) pure nothrow @nogc
+{
+    if (path.length == 0 || path.length > 1024 || path[0] != '/')
+        return false;
+    foreach (character; path)
     {
-        if (options.path.length == 0 || options.path.length > 1024 || options.path[0] != '/')
+        if (character <= ' ' || character == '?' || character == '#' || character == ':' || character == '*')
             return false;
-        foreach (character; options.path)
-        {
-            if (character <= ' ' || character == '?' || character == '#' || character == ':' || character == '*')
-                return false;
-        }
     }
     return true;
 }

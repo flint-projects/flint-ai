@@ -20,10 +20,10 @@ private struct InputMetadata
     bool http;
     bool invalid;
     bool terminate;
-    char[64] revisionBytes;
-    char[128] methodBytes;
-    char[1536] nameBytes;
-    char[64] sessionBytes;
+    char[64] revisionText;
+    char[128] methodText;
+    char[1536] nameText;
+    char[64] sessionText;
     size_t revisionLength;
     size_t methodLength;
     size_t nameLength;
@@ -38,16 +38,16 @@ private struct InputMetadata
         methodLength = input.method.length;
         nameLength = input.name.length;
         sessionLength = input.session.length;
-        revisionBytes[0 .. revisionLength] = input.release;
-        methodBytes[0 .. methodLength] = input.method;
-        nameBytes[0 .. nameLength] = input.name;
-        sessionBytes[0 .. sessionLength] = input.session;
+        revisionText[0 .. revisionLength] = input.release;
+        methodText[0 .. methodLength] = input.method;
+        nameText[0 .. nameLength] = input.name;
+        sessionText[0 .. sessionLength] = input.session;
     }
 
     Headers view() const return nothrow @nogc
     {
-        return Headers(http, invalid, revisionBytes[0 .. revisionLength],
-                methodBytes[0 .. methodLength], nameBytes[0 .. nameLength], sessionBytes[0 .. sessionLength], terminate);
+        return Headers(http, invalid, revisionText[0 .. revisionLength],
+                methodText[0 .. methodLength], nameText[0 .. nameLength], sessionText[0 .. sessionLength], terminate);
     }
 }
 
@@ -82,7 +82,6 @@ final class Operations
     private shared bool stopping;
     private shared bool stopped;
     private shared int failureStatus;
-
     this(Protocol protocol, size_t maximum, uint capacity, StdioOutput stdio = null)
     {
         this.protocol = protocol;
@@ -235,7 +234,7 @@ final class Operations
             scope const(char)[] session) nothrow @nogc
     {
         return operation.occupied && operation.cancellable && !atomicLoad(operation.completed)
-            && operation.id == id && operation.metadata.view().session == session;
+            && operation.id.matches(id) && operation.metadata.view().session == session;
     }
 
     Error check() const scope nothrow @nogc

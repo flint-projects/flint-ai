@@ -14,14 +14,14 @@ enum maxMethod = 128;
 enum maxIdentity = 256;
 enum maxResource = 1024;
 
-enum parseError = -32700;
-enum invalidRequest = -32600;
-enum methodNotFound = -32601;
-enum invalidParameters = -32602;
-enum internalError = -32603;
-enum headerMismatch = -32020;
-enum missingCapability = -32021;
-enum unsupportedVersion = -32022;
+enum parseError = -32_700;
+enum invalidRequest = -32_600;
+enum methodNotFound = -32_601;
+enum invalidParameters = -32_602;
+enum internalError = -32_603;
+enum headerMismatch = -32_020;
+enum missingCapability = -32_021;
+enum unsupportedVersion = -32_022;
 
 struct Range
 {
@@ -57,7 +57,7 @@ struct Identity
             result.signedNumber(number);
     }
 
-    bool opEquals(scope const ref Identity other) const scope pure nothrow @nogc
+    bool matches(scope const ref Identity other) const scope pure nothrow @nogc
     {
         if (present != other.present || quoted != other.quoted)
             return false;
@@ -108,10 +108,10 @@ struct Fields
     }
 }
 
-Error inspect(scope const(ubyte)[] input, scope JsonMemberRangeVisitor visitor, size_t maximum = maxMessage) nothrow @nogc
+nothrow @nogc Error inspect(scope const(ubyte)[] input, scope JsonMemberRangeVisitor visitor, size_t cap = maxMessage)
 {
     DecodeOptions limits;
-    limits.maxBytes = maximum;
+    limits.maxBytes = cap;
     return visitJsonObjectRanges(input, visitor, limits);
 }
 
@@ -200,8 +200,12 @@ Result!Range member(scope const(ubyte)[] document, scope const(char)[] expected)
 
 bool isObject(scope const(ubyte)[] bytes) nothrow @nogc
 {
-    return inspect(bytes, (scope JsonMemberName unused, size_t offset, size_t length) @safe nothrow @nogc => Error.init)
-        .code == Status.ok;
+    Error accept(scope JsonMemberName, size_t, size_t) @safe nothrow @nogc
+    {
+        return Error.init;
+    }
+
+    return inspect(bytes, &accept).code == Status.ok;
 }
 
 alias Emit = void delegate(ref scope JsonWriter) @safe nothrow @nogc;

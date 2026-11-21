@@ -28,7 +28,8 @@ private struct Block
 private final class Tools
 {
     @McpTool("echo", "Echoes bounded UTF-8", true)
-    Result!ToolResult echo(scope const ref EchoInput args, ref scope RequestArena arena, ref Context context) nothrow @nogc
+    nothrow @nogc Result!ToolResult echo(scope const ref EchoInput args, ref scope RequestArena arena,
+            ref Context context)
     {
         Block[1] content;
         content[0].text = args.input;
@@ -38,7 +39,8 @@ private final class Tools
     }
 
     @McpTool("fail", "Produces a checked application failure")
-    Result!ToolResult fail(scope const ref EchoInput args, ref scope RequestArena arena, ref Context context) nothrow @nogc
+    nothrow @nogc Result!ToolResult fail(scope const ref EchoInput args, ref scope RequestArena arena,
+            ref Context context)
     {
         return Result!ToolResult(ToolResult.init, Error(Status.conflict, "fixture failure"));
     }
@@ -47,7 +49,8 @@ private final class Tools
     private uint completed;
 
     @McpTool("slow", "Wait for cancellation or a finite deadline")
-    Result!ToolResult slow(scope const ref EchoInput args, ref scope RequestArena arena, ref Context context) nothrow @nogc
+    nothrow @nogc Result!ToolResult slow(scope const ref EchoInput args, ref scope RequestArena arena,
+            ref Context context)
     {
         const end = Deadline.afterMillis(3_000);
         while (Deadline.afterMillis(0).monotonicNanoseconds < end.monotonicNanoseconds)
@@ -64,7 +67,8 @@ private final class Tools
     }
 
     @McpTool("stats", "Report completed and cancelled fixture work")
-    Result!ToolResult stats(scope const ref EchoInput args, ref scope RequestArena arena, ref Context context) nothrow @nogc
+    nothrow @nogc Result!ToolResult stats(scope const ref EchoInput args, ref scope RequestArena arena,
+            ref Context context)
     {
         static struct Counts
         {
@@ -129,30 +133,11 @@ private int runClient(string[] arguments)
     if (arguments.length < 4 || arguments.length > 5)
         return 2;
     McpClient client;
-    McpClientOptions options;
-    options.revision = arguments[3] == "legacy" ? ProtocolRevision.legacy20251125 : ProtocolRevision.modern20260728;
-    options.acceptLegacy = arguments[3] != "modern";
-    if (arguments[3] == "mrtr")
-        options.elicitation = (scope const(ubyte)[] params, ref scope RequestArena arena,
-                ref Context context) @safe nothrow @nogc {
-        return arena.copyIn(cast(const(ubyte)[]) `{"action":"accept","content":{"answer":"explicit"}}`);
-    };
-    if (arguments[3] == "bounded-mrtr")
-        options.maxInputRounds = 1;
     Context root;
     auto context = root.withDeadline(Deadline.afterMillis(8_000));
-    Error opened;
-    if (arguments[2][0] == '/')
-    {
-        string mode = arguments[3] == "fallback" ? "legacy" : "dual";
-        const argv = arguments.length == 5 ? [arguments[4], "--stdio", arguments[3]] : [
-            "stdio", mode
-        ];
-        McpProcessOptions process = McpProcessOptions(arguments[2], argv, ["FLINT_MCP_FIXTURE=true"]);
-        opened = client.connectProcess(process, options, context);
-    }
-    else
-        opened = client.connectWith(arguments[2], options, context);
+    const mode = arguments[3];
+    const script = arguments.length == 5 ? arguments[4] : null;
+    const opened = connectFixture(client, arguments[2], mode, script, context);
     if (opened.code != Status.ok)
     {
         writeln(opened.code, " ", opened.message);
@@ -163,27 +148,69 @@ private int runClient(string[] arguments)
 
     ubyte[64 * 1024] memory;
     auto arena = RequestArena(memory[]);
+    const echo = checkEcho(client, mode, arena, context);
+    if (echo || mode == "bounded-mrtr" || mode == "reject-mrtr" || mode == "reject-headers")
+        return echo;
+    if (mode != "mrtr" && mode != "headers")
+    {
+        const checked = checkResourceAndError(client, arena, context);
+        if (checked)
+            return checked;
+    }
+    return client.close(context).code == Status.ok ? 0 : 16;
+}
+
+private Error connectFixture(ref McpClient client, string endpoint, string mode, string script, ref Context context)
+{
+    McpClientOptions options;
+    options.revision = mode == "legacy" ? ProtocolRevision.legacy20251125 : ProtocolRevision.modern20260728;
+    options.acceptLegacy = mode != "modern";
+    if (mode == "mrtr")
+        options.elicitation = (scope const(ubyte)[] message, ref scope RequestArena arena, ref Context call) {
+        return answerFixture(message, arena, call);
+    };
+    if (mode == "bounded-mrtr")
+        options.maxInputRounds = 1;
+    if (endpoint[0] != '/')
+        return client.connectWith(endpoint, options, context);
+
+    const childMode = mode == "fallback" ? "legacy" : "dual";
+    const argv = script.length ? [script, "--stdio", mode] : ["stdio", childMode];
+    return client.connectProcess(McpProcessOptions(endpoint, argv, ["FLINT_MCP_FIXTURE=true"]), options, context);
+}
+
+private Result!Buffer answerFixture(scope const(ubyte)[], ref scope RequestArena arena, ref Context) nothrow @nogc
+{
+    return arena.copyIn(cast(const(ubyte)[]) `{"action":"accept","content":{"answer":"explicit"}}`);
+}
+
+private int checkEcho(ref McpClient client, string mode, ref scope RequestArena arena, ref Context context)
+{
     if (!client.listTools(arena, context).ok())
         return 12;
-    const fields = arguments[3] == "headers" ? `{"input":"hello","nested":{"region":" padded 世界 "},"enabled":false,"limit":42}` : `{"input":"hello"}`;
+    enum mirrored = `{"input":"hello","nested":{"region":" padded 世界 "},"enabled":false,"limit":42}`;
+    const fields = mode == "headers" ? mirrored : `{"input":"hello"}`;
     const echo = client.callTool("echo", cast(const(ubyte)[]) fields, arena, context);
-    if (arguments[3] == "reject-headers")
+    switch (mode)
+    {
+    case "reject-headers":
         return echo.error.code == Status.invalidArgument ? 0 : 19;
-    if (arguments[3] == "bounded-mrtr")
+    case "bounded-mrtr":
         return echo.error.code == Status.resourceExhausted ? 0 : 17;
-    if (arguments[3] == "reject-mrtr")
+    case "reject-mrtr":
         return echo.error.code == Status.unsupported ? 0 : 18;
-    if (!echo.ok() || echo.value.isError || !contains(arena, echo.value.content, "hello"))
-        return 13;
-    if (arguments[3] == "mrtr" || arguments[3] == "headers")
-        return client.close(context).code == Status.ok ? 0 : 16;
+    default:
+        return echo.ok() && !echo.value.isError && contains(arena, echo.value.content, "hello") ? 0 : 13;
+    }
+}
+
+private int checkResourceAndError(ref McpClient client, ref scope RequestArena arena, ref Context context)
+{
     const fails = client.callTool("fail", cast(const(ubyte)[]) `{"input":"hello"}`, arena, context);
     if (!fails.ok() || !fails.value.isError || !contains(arena, fails.value.content, "fixture failure"))
         return 14;
     const resource = client.readResource("local://example", arena, context);
-    if (!resource.ok() || !contains(arena, resource.value, "explicit fixture contents"))
-        return 15;
-    return client.close(context).code == Status.ok ? 0 : 16;
+    return resource.ok() && contains(arena, resource.value, "explicit fixture contents") ? 0 : 15;
 }
 
 private bool contains(ref scope RequestArena arena, Buffer handle, string expected) nothrow @nogc

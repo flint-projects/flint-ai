@@ -50,7 +50,7 @@ Result!Buffer prepareInput(scope const(ubyte)[] result, size_t maximum, scope Mc
 {
     const requests = member(result, "inputRequests");
     const opaque = member(result, "requestState");
-    if (!requests.ok() || !opaque.ok() || !requests.value.present() && !opaque.value.present())
+    if (!requests.ok() || !opaque.ok() || (!requests.value.present() && !opaque.value.present()))
         return Result!Buffer(Buffer.init, malformed("MCP input round lacks requests or state"));
     const state = opaque.value.get(result);
     const encodedRequests = requests.value.get(result);
@@ -63,33 +63,12 @@ Result!Buffer prepareInput(scope const(ubyte)[] result, size_t maximum, scope Mc
         if (parsed.code != Status.ok)
             return Result!Buffer(Buffer.init, parsed);
     }
-    // Validate all methods before calling into the application to collect data.
-    foreach (ref field; collected.fields[0 .. collected.count])
-    {
-        const checked = checkRequest(field.request.get(encodedRequests));
-        if (checked.code != Status.ok)
-            return Result!Buffer(Buffer.init, checked);
-    }
-    if (collected.count && handler is null)
-        return Result!Buffer(Buffer.init, Error(Status.unsupported, "MCP elicitation has no application handler"));
-    foreach (ref field; collected.fields[0 .. collected.count])
-    {
-        const checked = context.check();
-        if (checked.code != Status.ok)
-            return Result!Buffer(Buffer.init, checked);
-        const request = field.request.get(encodedRequests);
-        const params = member(request, "params");
-        const answered = handler(params.value.get(request), work, context);
-        if (!answered.ok())
-            return answered;
-        bool accepted;
-        const valid = work.read(answered.value, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
-            accepted = validResponse(bytes);
-        });
-        if (valid != Status.ok || !accepted)
-            return Result!Buffer(Buffer.init, malformed("invalid application MCP elicitation response"));
-        field.response = answered.value;
-    }
+    const accepted = validateRequests(collected, encodedRequests, handler !is null);
+    if (accepted.code != Status.ok)
+        return Result!Buffer(Buffer.init, accepted);
+    const answered = answerRequests(collected, encodedRequests, handler, work, context);
+    if (answered.code != Status.ok)
+        return Result!Buffer(Buffer.init, answered);
     return pack(output, maximum, (ref scope JsonWriter writer) @safe nothrow @nogc {
         if (state.length)
         {
@@ -97,23 +76,66 @@ Result!Buffer prepareInput(scope const(ubyte)[] result, size_t maximum, scope Mc
             writer.append(state);
         }
         if (encodedRequests.length)
-        {
-            append(writer, `,"inputResponses":{`);
-            foreach (index, ref field; collected.fields[0 .. collected.count])
-            {
-                if (index)
-                    writer.put(',');
-                quote(writer, field.name[0 .. field.nameLength]);
-                writer.put(':');
-                const read = work.read(field.response, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
-                    writer.append(bytes);
-                });
-                if (read != Status.ok)
-                    writer.fail(read, "MCP elicitation result became stale");
-            }
-            writer.put('}');
-        }
+            writeResponses(writer, collected, work);
     });
+}
+
+nothrow @nogc private Error validateRequests(scope const ref InputMap collected,
+        scope const(ubyte)[] wire, bool hasHandler)
+{
+    // Validate every request before asking the application for input.
+    foreach (ref field; collected.fields[0 .. collected.count])
+    {
+        const checked = checkRequest(field.request.get(wire));
+        if (checked.code != Status.ok)
+            return checked;
+    }
+    if (collected.count && !hasHandler)
+        return Error(Status.unsupported, "MCP elicitation has no application handler");
+    return Error.init;
+}
+
+private Error answerRequests(ref scope InputMap collected, scope const(ubyte)[] wire,
+        scope McpElicitation handler, ref scope RequestArena work, ref Context context) nothrow @nogc
+{
+    foreach (ref field; collected.fields[0 .. collected.count])
+    {
+        const checked = context.check();
+        if (checked.code != Status.ok)
+            return checked;
+        const request = field.request.get(wire);
+        const params = member(request, "params");
+        const answered = handler(params.value.get(request), work, context);
+        if (!answered.ok())
+            return answered.error;
+        bool accepted;
+        const valid = work.read(answered.value, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
+            accepted = validResponse(bytes);
+        });
+        if (valid != Status.ok || !accepted)
+            return malformed("invalid application MCP elicitation response");
+        field.response = answered.value;
+    }
+    return Error.init;
+}
+
+nothrow @nogc private void writeResponses(ref scope JsonWriter writer, scope const ref InputMap collected,
+        ref scope RequestArena work)
+{
+    append(writer, `,"inputResponses":{`);
+    foreach (index, ref field; collected.fields[0 .. collected.count])
+    {
+        if (index)
+            writer.put(',');
+        quote(writer, field.name[0 .. field.nameLength]);
+        writer.put(':');
+        const read = work.read(field.response, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
+            writer.append(bytes);
+        });
+        if (read != Status.ok)
+            writer.fail(read, "MCP elicitation result became stale");
+    }
+    writer.put('}');
 }
 
 private Error checkRequest(scope const(ubyte)[] request) nothrow @nogc

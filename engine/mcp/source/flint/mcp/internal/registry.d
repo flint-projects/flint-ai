@@ -26,10 +26,10 @@ struct Invocation
 alias BeginTool = void delegate() @safe nothrow @nogc;
 
 // dfmt off
-alias ToolAction = Invocation delegate(scope const(ubyte)[], ref scope RequestArena, ref Context, scope BeginTool)
-        @safe nothrow @nogc;
-alias ResourceAction = Result!Buffer delegate(ref scope RequestArena, ref Context) @safe nothrow @nogc;
+alias ToolAction = Invocation delegate(scope const(ubyte)[], ref scope RequestArena,
+        ref Context, scope BeginTool) @safe nothrow @nogc;
 // dfmt on
+alias ResourceAction = Result!Buffer delegate(ref scope RequestArena, ref Context) @safe nothrow @nogc;
 
 struct Tool
 {
@@ -128,12 +128,7 @@ struct Registry
         if (toolCount == tools.length)
             return Error(Status.resourceExhausted, "MCP tool registry is full");
 
-        scope memory = new ubyte[32 * 1024];
-        auto arena = RequestArena(memory);
-        const schema = jsonSchema!Dto(arena);
-        if (!schema.ok())
-            return schema.error;
-        const stored = duplicate(arena, schema.value);
+        const stored = schemaString!Dto();
         if (!stored.ok())
             return stored.error;
         tools[toolCount++] = Tool(marker, stored.value, (scope const(ubyte)[] wire,
@@ -155,8 +150,8 @@ struct Registry
 
     private Error addResource(T, string name, size_t index, McpResource marker)(T provider)
     {
-        static assert(__traits(compiles, (T instance, ref scope RequestArena arena, ref Context context) @safe nothrow @nogc {
-                Result!Buffer output = __traits(getOverloads, instance, name, true)[index](arena, context);
+        static assert(__traits(compiles, (T self, ref scope RequestArena work, ref Context ctx) @safe nothrow @nogc {
+                Result!Buffer output = __traits(getOverloads, self, name, true)[index](work, ctx);
             }), "MCP resource must be @safe nothrow @nogc and return Result!Buffer");
         if (!validText(marker.uri, maxResource) || !validText(marker.mimeType, 256))
             return malformed("invalid MCP resource registration");
@@ -270,6 +265,14 @@ bool validText(scope const(char)[] value, size_t maximum, bool empty = false) no
     JsonWriter check;
     quote(check, value);
     return check.error.code == Status.ok;
+}
+
+private Result!string schemaString(T)()
+{
+    scope memory = new ubyte[32 * 1024];
+    auto arena = RequestArena(memory);
+    const schema = jsonSchema!T(arena);
+    return schema.ok() ? duplicate(arena, schema.value) : Result!string(null, schema.error);
 }
 
 private Result!string duplicate(ref scope RequestArena arena, Buffer handle)

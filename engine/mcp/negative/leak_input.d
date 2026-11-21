@@ -8,6 +8,7 @@ import flint.mcp : McpElicitation;
 
 private const(ubyte)[] leaked;
 
+/// A response callback must not persist its borrowed request.
 McpElicitation unsafeHandler()
 {
     return (scope const(ubyte)[] query, ref scope RequestArena output, ref Context context) @safe nothrow @nogc {

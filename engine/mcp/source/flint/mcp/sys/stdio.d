@@ -49,7 +49,8 @@ struct Child
 
     // The three CLOEXEC pipes and copied argv/env vectors stay owned through fork.
     // SAFETY: On failure all pipes close. The child uses POSIX calls, then exec or _exit without unwinding.
-    private Error launch(scope const(char)* path, scope const(char)*[] argv, scope const(char)*[] env) @trusted nothrow @nogc
+    @trusted nothrow @nogc private Error launch(scope const(char)* path, scope const(char)*[] argv,
+            scope const(char)*[] env)
     {
         int[2] incoming = [-1, -1];
         int[2] outgoing = [-1, -1];
@@ -221,7 +222,7 @@ private void signal(int process, int value) @trusted nothrow @nogc
 private bool reaped(int process) @trusted nothrow @nogc
 {
     const status = waitpid(process, null, WNOHANG);
-    return status == process || status < 0 && errno == ECHILD;
+    return status == process || (status < 0 && errno == ECHILD);
 }
 
 // SAFETY: poll borrows exactly two descriptors and consumes only a bounded stack diagnostic buffer.
@@ -326,7 +327,7 @@ Error writePipe(int file, int diagnostic, scope const(ubyte)[] input, ref scope 
         const sent = writeFrom(file, input[0 .. limit]);
         if (sent > 0)
             input = input[cast(size_t) sent .. $];
-        else if (sent == 0 || errno != EINTR && errno != EAGAIN)
+        else if (sent == 0 || (errno != EINTR && errno != EAGAIN))
             return Error(Status.ioError, "MCP pipe write failed");
     }
     return Error.init;

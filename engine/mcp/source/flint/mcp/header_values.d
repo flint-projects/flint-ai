@@ -96,13 +96,18 @@ bool matchesHeader(scope const(char)[] header, scope const(char)[] expected) pur
         }
         encodedEnd = position + 1;
     }
-    foreach (pad; encoded[encodedEnd .. $])
+    return matched == expected.length && scalar == 0 && validPadding(encoded[encodedEnd .. $], matched);
+}
+
+private bool validPadding(scope const(char)[] remaining, size_t length) pure nothrow @nogc
+{
+    foreach (pad; remaining)
     {
         if (pad != '=')
             return false;
     }
-    const padding = matched % 3 ? 3 - matched % 3 : 0;
-    return matched == expected.length && scalar == 0 && encoded.length - encodedEnd == padding;
+    const padding = length % 3 ? 3 - length % 3 : 0;
+    return remaining.length == padding;
 }
 
 private int digitValue(char character) pure nothrow @nogc

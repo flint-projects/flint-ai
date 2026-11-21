@@ -45,10 +45,8 @@ enum Transport : ubyte
 alias McpAuthorize = bool delegate(ref scope Request, ref scope RequestContext) @safe nothrow @nogc;
 
 /// Answer an explicit MRTR elicitation request using application policy.
-// dfmt off
 alias McpElicitation = Result!Buffer delegate(scope const(ubyte)[] parameters,
         ref scope RequestArena arena, ref Context context) @safe nothrow @nogc;
-// dfmt on
 
 /// Configure a bounded MCP listener or stdio service.
 struct McpOptions
