@@ -162,19 +162,17 @@ nothrow:
         auto content = split < line.length ? line[split + 1 .. $] : line[$ .. $];
         if (content.length != 0 && content[0] == ' ')
             content = content[1 .. $];
-        switch (field)
-        {
-        case "data":
+        // Plain comparisons instead of a string switch: the switch helper is a shared template instance
+        // that the compiler may emit in the client module, which would link HTTP into parser-only programs.
+        if (field == "data")
             return appendData(content);
-        case "event":
-            if (content.length > eventName.length)
-                return Error(Status.resourceExhausted, "SSE event name is too long");
-            nameLength = cast(uint) content.length;
-            eventName[0 .. nameLength] = cast(const(char)[]) content;
+        if (field != "event")
             return Error.init;
-        default:
-            return Error.init;
-        }
+        if (content.length > eventName.length)
+            return Error(Status.resourceExhausted, "SSE event name is too long");
+        nameLength = cast(uint) content.length;
+        eventName[0 .. nameLength] = cast(const(char)[]) content;
+        return Error.init;
     }
 
     private Error appendData(scope const(ubyte)[] content) scope
