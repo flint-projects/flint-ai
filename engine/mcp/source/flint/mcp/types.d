@@ -16,6 +16,21 @@ struct McpTool
     string description;
     /// Descriptive hint for clients.
     bool readOnly = false;
+    /// The tool may block, allocate and throw, such as one that runs a process. Its method has the signature
+    /// `BlockingToolResult name(Dto input) @safe` and runs on a dedicated managed worker, one call at a time; the
+    /// protocol path stays `nothrow @nogc` and copies arguments and results across.
+    bool blocking = false;
+}
+
+/// The result of a blocking tool, in memory it owns. The server copies it into the reply.
+struct BlockingToolResult
+{
+    /// Text content returned to the client.
+    string text;
+    /// Optional structured content: one JSON object.
+    string structuredJson;
+    /// Whether the tool reports an error.
+    bool isError = false;
 }
 
 /// Publish an explicitly registered resource.

@@ -4,6 +4,8 @@
 
 The default wire revision is `2026-07-28`. Configure `acceptLegacy` to control fallback to the separate `2025-11-25` capability handshake and session state. The modern transport scopes operation cancellation to an HTTP request. Legacy cancellation matches the session and JSON-RPC identity. HTTP binds loopback by default. External listeners require an authorization delegate. An Origin header must match a configured allowed origin, and TLS can be configured on the listener.
 
+A tool marked `@McpTool(name, description, readOnly, true)` is a *blocking* tool: `BlockingToolResult name(Dto input) @safe` may allocate, block and throw, for example to run a process. The protocol path stays `nothrow @nogc`; it copies the arguments into storage the server owns and hands the call to one managed worker, which decodes, validates and runs the tool and returns an owned result that the protocol copies into the reply. One blocking call runs at a time and it is not cancelled mid-run (ADR-026).
+
 Registered tool inputs are validated against generated schemas. Custom `x-mcp-header` annotations encode supported fields from those schemas. The MRTR client uses the configured elicitation handler and bounds the number of additional rounds. Applications own authorization and policy for registered tools and resources. The default limits are a 4 MiB message and 64 in-flight operations.
 
 ## Linux verification

@@ -5,10 +5,11 @@ import flint.arena : Buffer, Error, RequestArena, Result, Status;
 import flint.conc : Context;
 import flint.mcp.jsonrpc : append, isObject, malformed, maxMethod, maxResource, quote;
 import flint.mcp.legacy : SessionKey;
-import flint.mcp.types : McpResource, McpTool, ToolResult;
+import flint.mcp.internal.blocking : BlockingAction, BlockingInvocation;
+import flint.mcp.types : BlockingToolResult, McpResource, McpTool, ToolResult;
 import flint.serde : decodeInto, jsonSchema;
 import flint.serde.json_write : JsonWriter;
-import flint.validate : Violation, validateIn;
+import flint.validate : Violation, validate, validateIn;
 import std.traits : Parameters, Unqual;
 
 @safe:
@@ -36,6 +37,7 @@ struct Tool
     McpTool info;
     string schema;
     ToolAction action;
+    BlockingAction blocking;
 }
 
 struct Resource
@@ -49,6 +51,7 @@ struct Registry
     private Tool[registryCapacity] tools;
     private Resource[registryCapacity] resources;
     private size_t toolCount;
+    private size_t blockingCount;
     private size_t resourceCount;
     private SessionKey generation;
 
@@ -64,6 +67,7 @@ struct Registry
             return malformed("MCP provider is null");
         const firstTool = toolCount;
         const firstResource = resourceCount;
+        const firstBlocking = blockingCount;
         const result = scan(provider);
         if (result.code == Status.ok && firstTool == toolCount && firstResource == resourceCount)
             return malformed("MCP provider has no registered methods");
@@ -73,6 +77,7 @@ struct Registry
             resources[firstResource .. resourceCount] = Resource.init;
             toolCount = firstTool;
             resourceCount = firstResource;
+            blockingCount = firstBlocking;
         }
         return result;
     }
@@ -112,6 +117,84 @@ struct Registry
 
     private Error addTool(T, string name, size_t index, McpTool marker)(T provider)
     {
+        static if (marker.blocking)
+            return addBlockingTool!(T, name, index, marker)(provider);
+        else
+            return addNonblockingTool!(T, name, index, marker)(provider);
+    }
+
+    /// A blocking tool: `BlockingToolResult name(Dto input) @safe`, run on the managed worker.
+    private Error addBlockingTool(T, string name, size_t index, McpTool marker)(T provider)
+    {
+        alias Member = __traits(getOverloads, T, name, true)[index];
+        alias Args = Parameters!Member;
+        static assert(Args.length == 1, "a blocking MCP tool takes its DTO only");
+        alias Dto = Unqual!(Args[0]);
+        static assert(is(Dto == struct), "MCP tool input must be a struct DTO");
+        static assert(__traits(compiles, (T instance, Dto dto) @safe {
+                BlockingToolResult output = __traits(getOverloads, instance, name, true)[index](dto);
+            }), "a blocking MCP tool must be @safe and return BlockingToolResult");
+        const checked = admissible(marker);
+        if (checked.code != Status.ok)
+            return checked;
+        const stored = schemaString!Dto();
+        if (!stored.ok())
+            return stored.error;
+        tools[toolCount++] = Tool(marker, stored.value, null, (scope const(char)[] wire) @safe nothrow{
+            import flint.serde.owned : deserialize;
+
+            try
+            {
+                const parsed = deserialize!Dto(wire.length ? wire : "{}");
+                Violation[1] errors;
+                if (!parsed.ok || !validate(parsed.value, errors[]).valid)
+                    return BlockingInvocation(BlockingToolResult.init, true);
+                return BlockingInvocation(__traits(getOverloads, provider, name, true)[index](parsed.value));
+            }
+            catch (Exception failure)
+                return BlockingInvocation(BlockingToolResult(failure.msg.length ? failure.msg
+                    : "the MCP tool failed", null, true));
+        });
+        blockingCount++;
+        return Error.init;
+    }
+
+    private Error admissible(McpTool marker)
+    {
+        if (!validText(marker.name, maxMethod) || !validText(marker.description, 4096, true))
+            return malformed("invalid MCP tool registration");
+        if (findTool(marker.name).action !is null || findTool(marker.name).blocking !is null)
+            return Error(Status.conflict, "duplicate MCP tool name");
+        if (toolCount == tools.length)
+            return Error(Status.resourceExhausted, "MCP tool registry is full");
+        return Error.init;
+    }
+
+    /// The position of tool `name`, or size_t.max.
+    size_t toolPosition(scope const(char)[] name) scope pure nothrow @nogc
+    {
+        foreach (i, ref entry; tools[0 .. toolCount])
+        {
+            if (entry.info.name == name)
+                return i;
+        }
+        return size_t.max;
+    }
+
+    /// The blocking action at `position`, or null.
+    BlockingAction blockingAt(size_t position) nothrow
+    {
+        return position < toolCount ? tools[position].blocking : null;
+    }
+
+    /// Whether any registered tool runs on the managed worker.
+    bool hasBlocking() const scope pure nothrow @nogc
+    {
+        return blockingCount != 0;
+    }
+
+    private Error addNonblockingTool(T, string name, size_t index, McpTool marker)(T provider)
+    {
         alias Member = __traits(getOverloads, T, name, true)[index];
         alias Args = Parameters!Member;
         static assert(Args.length == 3, "MCP tool requires DTO, arena and context parameters");
@@ -121,13 +204,9 @@ struct Registry
                 ref Context context) @safe nothrow @nogc {
                 Result!ToolResult output = __traits(getOverloads, instance, name, true)[index](dto, arena, context);
             }), "MCP tool must be @safe nothrow @nogc and return Result!ToolResult");
-        if (!validText(marker.name, maxMethod) || !validText(marker.description, 4096, true))
-            return malformed("invalid MCP tool registration");
-        if (findTool(marker.name).action !is null)
-            return Error(Status.conflict, "duplicate MCP tool name");
-        if (toolCount == tools.length)
-            return Error(Status.resourceExhausted, "MCP tool registry is full");
-
+        const checked = admissible(marker);
+        if (checked.code != Status.ok)
+            return checked;
         const stored = schemaString!Dto();
         if (!stored.ok())
             return stored.error;

@@ -9,8 +9,8 @@ import flint.mcp.protocol : Protocol;
 import flint.mcp.internal.registry : validText;
 import flint.mcp.stdio : StdioEndpoint;
 public import flint.mcp.client : McpClient;
-public import flint.mcp.types : McpAuthorize, McpClientOptions, McpElicitation, McpOptions,
-    McpProcessOptions, McpResource, McpTool, ProtocolRevision, ToolResult, Transport;
+public import flint.mcp.types : BlockingToolResult, McpAuthorize, McpClientOptions, McpElicitation,
+    McpOptions, McpProcessOptions, McpResource, McpTool, ProtocolRevision, ToolResult, Transport;
 
 @safe:
 
@@ -73,6 +73,8 @@ struct McpServer
         const stopped = http is null ? stdio.close(context) : http.close(context);
         if (stopped.code != Status.timedOut && stopped.code != Status.conflict)
         {
+            if (protocol.runner !is null)
+                protocol.runner.stop();
             http = null;
             stdio = null;
             protocol = null;
@@ -87,7 +89,11 @@ Error registerMcp(T)(ref McpServer server, ref T provider)
 {
     if (server.protocol is null || server.didRun)
         return Error(Status.conflict, "MCP registration requires a prepared server");
-    return server.protocol.registry.add(provider);
+    const added = server.protocol.registry.add(provider);
+    if (added.code != Status.ok || !server.protocol.registry.hasBlocking())
+        return added;
+    // Blocking tools run on one managed worker, started with the first of them.
+    return server.protocol.startRunner();
 }
 
 private bool validOptions(scope const ref McpOptions options) nothrow @nogc

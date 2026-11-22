@@ -9,6 +9,7 @@ import flint.mcp.jsonrpc : Emit, Envelope, Identity, Range, append, decodeEnvelo
     maxResource, methodNotFound, pack, parseError, quote, readString, unsupportedVersion, writeId;
 import flint.mcp.legacy : LegacyPhase, LegacySession, SessionKey, legacyRevision, validateInitialize;
 import flint.mcp.modern : Metadata, endModernResult, metadata, modernRevision, writeInfo;
+import flint.mcp.internal.blocking : BlockingRunner;
 import flint.mcp.internal.registry : BeginTool, Registry;
 import flint.mcp.types : McpOptions, ProtocolRevision, ToolResult;
 import flint.serde : DecodeOptions;
@@ -82,6 +83,8 @@ private struct ParamFields
 final class Protocol
 {
     Registry registry;
+    /// Runs blocking tools; started when the first one is registered.
+    BlockingRunner runner;
     private McpOptions limits;
     private LegacySession[64] sessions;
     private LegacyPhase stdioPhase;
@@ -89,6 +92,19 @@ final class Protocol
     this(McpOptions options)
     {
         limits = options;
+    }
+
+    /// Start the managed worker of blocking tools, once.
+    Error startRunner()
+    {
+        if (runner !is null)
+            return Error.init;
+        auto created = new BlockingRunner;
+        const started = created.start(limits.maxMessageBytes,
+                (size_t position) @safe nothrow => registry.blockingAt(position));
+        if (started.code == Status.ok)
+            runner = created;
+        return started;
     }
 
     private bool supportsModern() const scope pure nothrow @nogc
@@ -327,16 +343,55 @@ final class Protocol
         if (!fields.valid || !readString(fields.name.get(params), name[], length))
             return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP tool name");
         const tool = registry.findTool(name[0 .. length]);
-        if (tool.action is null)
+        if (tool.action is null && tool.blocking is null)
             return fail(output, call.data.id, 400, invalidParameters, "Unknown MCP tool");
         const none = cast(const(ubyte)[]) "{}";
         const args = fields.arguments.present() ? fields.arguments.get(params) : none;
+        if (tool.blocking !is null)
+            return invokeBlocking(work, output, call, registry.toolPosition(name[0 .. length]),
+                    args, context, admitted);
         const checked = tool.action(args, work, context, admitted);
         if (checked.badArguments)
             return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP tool arguments");
         if (!checked.result.ok())
             return toolError(output, call, checked.result.error.message);
         return encodeToolResult(work, output, call, checked.result.value);
+    }
+
+    /// Hand a blocking tool's call to the managed worker and encode its owned result.
+    nothrow @nogc private Reply invokeBlocking(ref scope RequestArena work, ref scope RequestArena output,
+            scope const ref Call call, size_t position, scope const(ubyte)[] args, ref Context context,
+            scope BeginTool admitted) scope
+    {
+        if (runner is null)
+            return fail(output, call.data.id, 500, internalError, "Blocking MCP tools are not running");
+        const checked = context.check();
+        if (checked.code != Status.ok)
+            return toolError(output, call, checked.message);
+        if (admitted !is null)
+            admitted();
+        const invocation = runner.run(position, args);
+        if (invocation.badArguments)
+            return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP tool arguments");
+        const text = invocation.result.text;
+        const content = pack(work, limits.maxMessageBytes, (ref scope JsonWriter writer) @safe nothrow @nogc {
+            append(writer, `[{"type":"text","text":`);
+            quote(writer, text);
+            append(writer, `}]`);
+        });
+        if (!content.ok())
+            return fail(output, call.data.id, 500, internalError, "MCP tool output exceeds the message limit");
+        ToolResult result;
+        result.content = content.value;
+        result.isError = invocation.result.isError;
+        if (invocation.result.structuredJson.length)
+        {
+            const structured = work.copyIn(cast(const(ubyte)[]) invocation.result.structuredJson);
+            if (!structured.ok())
+                return fail(output, call.data.id, 500, internalError, "MCP tool output exceeds the message limit");
+            result.structuredContent = structured.value;
+        }
+        return encodeToolResult(work, output, call, result);
     }
 
     private Reply encodeToolResult(ref scope RequestArena work, ref scope RequestArena output,
