@@ -1,7 +1,7 @@
 /// Exercise MCP stdio and HTTP against a real bounded typed registry.
 module app;
 
-import core.thread : Thread;
+import core.thread.osthread : Thread;
 import core.time : dur;
 import flint.arena : Buffer, Error, RequestArena, Result, Status, Text;
 import flint.conc : Context, Deadline;
