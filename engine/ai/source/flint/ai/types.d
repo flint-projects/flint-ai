@@ -90,7 +90,7 @@ struct ChatOptions
     /// Provider output token limit.
     uint maxOutputTokens = 1024;
     /// Sampling temperature.
-    double temperature;
+    double temperature = 0;
     /// Application-controlled continuation limit.
     uint maxToolRounds = 8;
     /// Maximum decoded bytes in one event.

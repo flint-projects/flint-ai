@@ -51,6 +51,35 @@ def chat():
     ]
 
 
+def tool_calls(kind):
+    """A complete tool call with no terminal event: the client cancels after observing it."""
+    arguments = '{"a":1}'
+    if kind in ("openAI", "routerResponses"):
+        return [
+            {"type": "response.output_item.added",
+             "item": {"type": "function_call", "id": "a", "call_id": "1", "name": "get"}},
+            {"type": "response.function_call_arguments.delta", "item_id": "a", "delta": arguments},
+            {"type": "response.function_call_arguments.done", "item_id": "a", "arguments": arguments},
+        ]
+    if kind == "anthropic":
+        return [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 7, "output_tokens": 1}}},
+            {"type": "content_block_start", "index": 0,
+             "content_block": {"type": "tool_use", "id": "a", "name": "get", "input": {}}},
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "input_json_delta", "partial_json": arguments}},
+            {"type": "content_block_stop", "index": 0},
+        ]
+    if kind == "gemini":
+        return [{"candidates": [{"content": {"parts": [{"functionCall": {"name": "get", "args": {"a": 1}}}]}}]}]
+    return [
+        {"choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "function": {"name": "get", "arguments": arguments}}]},
+            "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+
+
 class Peer(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     hits = Counter()
@@ -110,6 +139,8 @@ class Peer(BaseHTTPRequestHandler):
         else:
             if model in ("early", "cancel"):
                 output = output[:3 if kind == "anthropic" else 1]
+            elif model == "toolcancel":
+                output = tool_calls(kind)
             payload = b": provider heartbeat\r\n" + b"".join(map(event, output))
         self.send_response(429 if failure else 200)
         self.send_header("Content-Type", "text/event-stream")
@@ -121,7 +152,7 @@ class Peer(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 time.sleep(0.001)
         except (BrokenPipeError, ConnectionResetError):
-            if model != "cancel":
+            if model not in ("cancel", "toolcancel"):
                 self.errors.append("unexpected connection retirement")
 
 
@@ -142,9 +173,9 @@ def main():
         raise SystemExit(f"linked fixtures failed with exit {result.returncode}, peer errors {Peer.errors}")
     for provider in ("openAI", "anthropic", "gemini", "routerResponses", "routerChat"):
         assert {key[1]: hits for key, hits in Peer.hits.items() if key[0] == provider} == {
-            "fixture": 2, "rejected": 1, "early": 1, "cancel": 1,
+            "fixture": 2, "rejected": 1, "early": 1, "cancel": 1, "toolcancel": 1,
         }
-    print("Verified 25 scoped POSTs, five identities regenerated on retry and zero cancelled-request replays")
+    print("Verified 30 scoped POSTs, five identities regenerated on retry and zero cancelled-request replays")
 
 
 if __name__ == "__main__":

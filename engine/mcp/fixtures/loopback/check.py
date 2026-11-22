@@ -252,6 +252,25 @@ def with_server(exe, server_mode, callback):
             server.wait(timeout=8)
 
 
+# Client exit status per (server era, client era): 0 = typed round trips passed, 11 = connect refused.
+ERA_MATRIX = {
+    'modern': {'modern': 0, 'legacy': 11, 'fallback': 0},
+    'legacy': {'modern': 11, 'legacy': 0, 'fallback': 0},
+    'dual': {'modern': 0, 'legacy': 0, 'fallback': 0},
+}
+
+
+def era_matrix(exe):
+    for server_mode, clients in ERA_MATRIX.items():
+        def run_clients(port):
+            for client_mode, expected in clients.items():
+                result = subprocess.run([exe, 'client', f'http://127.0.0.1:{port}/mcp', client_mode],
+                                        timeout=12, capture_output=True)
+                assert result.returncode == expected, (server_mode, client_mode, result.returncode, result.stdout)
+        with_server(exe, server_mode, run_clients)
+    print('era matrix: modern/legacy/dual servers against modern/legacy/fallback clients')
+
+
 def check(exe):
     assert subprocess.run([exe, 'http', 'dual', str(local_port()), '0.0.0.0'], timeout=8).returncode == 42
     stdio_wire(exe)
@@ -268,6 +287,7 @@ def check(exe):
     with_server(exe, 'dual', check_http)
     with_server(exe, 'legacy', lambda port: subprocess.run(
         [exe, 'client', f'http://127.0.0.1:{port}/mcp', 'fallback'], check=True, timeout=12))
+    era_matrix(exe)
     print('HTTP modern, legacy, fallback, headers, Origin and 4 MiB envelope passed')
 
 
