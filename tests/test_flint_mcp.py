@@ -1,4 +1,4 @@
-"""flint mcp: the ADR-021 section 6 tools over MCP stdio, built on flint:mcp (Milestone 9, ADR-026)."""
+"""flint mcp: the ADR-021 section 6 tools over MCP stdio, built on flint:mcp (Milestone 9, ADR-027)."""
 import json
 import subprocess
 import tempfile
