@@ -2,6 +2,7 @@
 module app;
 
 import core.memory : GC;
+import core.stdc.stdio : printf;
 import core.time : MonoTime, ticksToNSecs;
 import flint.arena : Buffer, Error, RequestArena, Result, Status, Text;
 import flint.conc : Context, Deadline;
@@ -9,8 +10,6 @@ import flint.mcp : McpClient, McpClientOptions, McpOptions, McpProcessOptions, M
     ToolResult, Transport, registerMcp;
 import flint.serde : JsonRequired, encodeJson;
 import flint.validate : Size;
-import std.conv : to;
-import std.stdio : writeln;
 
 @safe:
 
@@ -122,9 +121,32 @@ private int measure(string endpoint)
     const elapsed = ticksToNSecs(MonoTime.currTime.ticks - started.ticks);
     const gcBytes = GC.stats().allocatedInCurrentThread - before;
     const gcCollections = GC.profileStats().numCollections - collections;
-    writeln("calls=", iterations, " payload=1024 checksum=", checksum, " elapsed_ns=", elapsed,
-            " gc_bytes=", gcBytes, " gc_collections=", gcCollections);
+    report(checksum, elapsed, gcBytes, gcCollections);
     return elapsed >= 100_000_000 && gcBytes == 0 && gcCollections == 0 && checksum != 0 ? 0 : 8;
+}
+
+// SAFETY: The C format string is a fixed NUL-terminated literal with matching scalar arguments.
+private void report(ulong checksum, long elapsed, ulong gcBytes, size_t gcCollections) @trusted nothrow @nogc
+{
+    printf("calls=%d payload=1024 checksum=%llu elapsed_ns=%lld gc_bytes=%llu gc_collections=%zu\n",
+            iterations, checksum, elapsed, gcBytes, gcCollections);
+}
+
+/// Parse a decimal TCP port, rejecting empty, non-digit and out-of-range text.
+private ushort parsePort(string text)
+{
+    if (text.length == 0)
+        throw new Exception("port is empty");
+    uint value;
+    foreach (character; text)
+    {
+        if (character < '0' || character > '9')
+            throw new Exception("port is not a decimal number");
+        value = value * 10 + (character - '0');
+        if (value > ushort.max)
+            throw new Exception("port is out of range");
+    }
+    return cast(ushort) value;
 }
 
 int main(string[] argv)
@@ -132,7 +154,7 @@ int main(string[] argv)
     if (argv.length == 2 && argv[1] == "stdio")
         return serve(0);
     if (argv.length == 3 && argv[1] == "http")
-        return serve(to!ushort(argv[2]));
+        return serve(parsePort(argv[2]));
     if (argv.length == 3 && argv[1] == "measure")
         return measure(argv[2]);
     return 1;

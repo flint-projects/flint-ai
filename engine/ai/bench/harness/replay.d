@@ -3,7 +3,7 @@ module replay;
 
 import core.memory : GC;
 import core.time : MonoTime;
-import std.stdio : writefln;
+import core.stdc.stdio : printf;
 
 @safe:
 
@@ -30,6 +30,12 @@ int measure(alias parse)(scope const string[] args)
     const expected = (byteCount / record.length) * 56UL;
     if (observed != expected || gcBytes != 0)
         return 1;
-    writefln("bytes=%s decoded_bytes=%s elapsed_ns=%s gc_bytes=%s", byteCount, observed, elapsed, gcBytes);
+    print(byteCount, observed, elapsed, gcBytes);
     return 0;
+}
+
+// SAFETY: The C format string is a fixed NUL-terminated literal with matching scalar arguments.
+private void print(int bytes, ulong decoded, long elapsed, ulong gcBytes) @trusted nothrow @nogc
+{
+    printf("bytes=%d decoded_bytes=%llu elapsed_ns=%lld gc_bytes=%llu\n", bytes, decoded, elapsed, gcBytes);
 }

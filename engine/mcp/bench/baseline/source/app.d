@@ -2,15 +2,15 @@
 module app;
 
 import core.memory : GC;
+import core.stdc.stdio : printf;
 import core.time : MonoTime, ticksToNSecs;
 import flint.arena : Error, RequestArena, Status;
 import flint.conc : Context, Deadline;
 import flint.http : ClientOptions, HttpClient, HttpMethod, HttpRequestView, HttpStreamField;
 import flint.web : Method, Request, RequestContext, Server, ServerOptions, StreamField, StreamMode,
     StreamRoute, StreamToken;
-import std.conv : to;
 import std.process : ProcessPipes, Redirect, pipeProcess, wait;
-import std.stdio : stdin, stdout, writeln;
+import std.stdio : stdin, stdout;
 
 private enum iterations = 100_000;
 private enum letters = "abcdefghijklmnopqrstuvwxyzABCDEF";
@@ -212,10 +212,27 @@ private int measure(string endpoint)
             return 7;
     }
     const elapsed = ticksToNSecs(MonoTime.currTime.ticks - started.ticks);
-    writeln("calls=", iterations, " payload=1024 checksum=", checksum, " elapsed_ns=", elapsed,
-            " gc_bytes=", GC.stats().allocatedInCurrentThread - allocated, " gc_collections=",
-            GC.profileStats().numCollections - collections);
+    printf("calls=%d payload=1024 checksum=%llu elapsed_ns=%lld gc_bytes=%llu gc_collections=%zu\n",
+            iterations, checksum,
+            elapsed, GC.stats().allocatedInCurrentThread - allocated, GC.profileStats().numCollections - collections);
     return checksum != 0 && elapsed >= 100_000_000 ? 0 : 8;
+}
+
+/// Parse a decimal TCP port, rejecting empty, non-digit and out-of-range text.
+private ushort parsePort(string text)
+{
+    if (text.length == 0)
+        throw new Exception("port is empty");
+    uint value;
+    foreach (character; text)
+    {
+        if (character < '0' || character > '9')
+            throw new Exception("port is not a decimal number");
+        value = value * 10 + (character - '0');
+        if (value > ushort.max)
+            throw new Exception("port is out of range");
+    }
+    return cast(ushort) value;
 }
 
 int main(string[] argv)
@@ -223,7 +240,7 @@ int main(string[] argv)
     if (argv.length == 2 && argv[1] == "stdio")
         return serveStdio();
     if (argv.length == 3 && argv[1] == "http")
-        return serveHttp(to!ushort(argv[2]));
+        return serveHttp(parsePort(argv[2]));
     if (argv.length == 3 && argv[1] == "measure")
         return measure(argv[2]);
     return 1;
