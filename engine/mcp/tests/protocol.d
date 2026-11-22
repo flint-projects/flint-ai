@@ -214,9 +214,13 @@ unittest
                 400, `"code":-32602`),
         Case(`{"jsonrpc":"2.0","id":5,"method":"tools/unknown","params":{` ~ unitMeta ~ `}}`, 404, `"code":-32601`),
         Case(call ~ `,"name":"count","arguments":{"input":"x"`, 400, `"code":-32700`),
-        // Batches are refused by both pinned revisions. The decoder currently labels a well-formed
-        // batch -32700 (parse error) rather than -32600; only the refusal itself is asserted here.
-        Case(`[` ~ call ~ `,"name":"count","arguments":{"input":"x"}}}]`, 400, `"error":{"code":-32`),
+        // Batches are refused by both pinned revisions: a well-formed batch is valid JSON but not a
+        // valid request (-32600), while a malformed array stays a parse error (-32700).
+        Case(`[` ~ call ~ `,"name":"count","arguments":{"input":"x"}}}]`, 400, `"code":-32600`),
+        Case(` [` ~ call ~ `,"name":"count","arguments":{"input":"x"}}},` ~ call ~ `,"name":"count","arguments":{}}}]`,
+                400, `"code":-32600`),
+        Case(`[` ~ call ~ `,"name":"count","arguments":{"input":"x"}}}`, 400, `"code":-32700`),
+        Case(`[]`, 400, `"code":-32600`),
     ];
     foreach (fault; faults)
     {

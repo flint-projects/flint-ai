@@ -3,7 +3,7 @@ module flint.mcp.jsonrpc;
 
 import flint.arena : Buffer, Error, RequestArena, Result, Status, Text;
 import flint.serde : DecodeOptions, decodeInto;
-import flint.serde.json_visit : JsonMemberName, JsonMemberRangeVisitor, visitJsonObjectRanges;
+import flint.serde.json_visit : JsonMemberName, JsonMemberRangeVisitor, visitJsonArray, visitJsonObjectRanges;
 import flint.serde.json_write : JsonWriter;
 
 @safe:
@@ -120,7 +120,8 @@ Result!Envelope decodeEnvelope(scope const(ubyte)[] wire, size_t maximum) nothro
     Fields fields;
     const decoded = inspect(wire, &fields.field, maximum);
     if (decoded.code != Status.ok)
-        return Result!Envelope(Envelope.init, decoded);
+        return Result!Envelope(Envelope.init, wellFormedBatch(wire, maximum)
+                ? malformed("JSON-RPC batches are not supported") : decoded);
     if (!isString(fields.protocol.get(wire), "2.0"))
         return Result!Envelope(Envelope.init, malformed("JSON-RPC version must be 2.0"));
     Envelope value;
@@ -249,6 +250,20 @@ void writeId(ref scope JsonWriter writer, scope const ref Identity id) nothrow @
 {
     append(writer, `{"jsonrpc":"2.0","id":`);
     id.encode(writer);
+}
+
+/// A syntactically valid JSON array: a batch, which is valid JSON but not a valid request (-32600).
+private bool wellFormedBatch(scope const(ubyte)[] wire, size_t maximum) nothrow @nogc
+{
+    size_t start;
+    while (start < wire.length && (wire[start] == ' ' || wire[start] == '\t' || wire[start] == '\r'
+            || wire[start] == '\n'))
+        ++start;
+    if (start == wire.length || wire[start] != '[')
+        return false;
+    DecodeOptions limits;
+    limits.maxBytes = maximum;
+    return visitJsonArray(wire, (scope const(ubyte)[]) @safe nothrow @nogc => Error.init, limits).code == Status.ok;
 }
 
 Error malformed(string reason) pure nothrow @nogc

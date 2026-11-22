@@ -31,12 +31,11 @@ Compile-negative fixtures run with `python3 packages/mcp/negative/check.py dmd l
 | 22 | Fuzz seeds: cancellation, generation reuse | items 15-16; item 13 (cursor of another registry generation) | covered |
 | 23 | Borrowed request cannot be retained; unsafe provider cannot register | `negative/check.py` (`leak_input.d`, `unsafe_provider.d`) | covered (runner added) |
 
-## Findings (not changed)
+## Findings (fixed)
 
-- A well-formed JSON batch (`[ {...} ]`) is refused, as both pinned revisions require, but with
-  JSON-RPC code -32700 (parse error) rather than -32600 (invalid request). The refusal is asserted in
-  `tool_errors`; changing the code means touching the single-pass envelope decoder in `jsonrpc.d`
-  and is left for the owner.
+- A well-formed JSON batch (`[ {...} ]`) was refused with JSON-RPC code -32700 (parse error). The
+  envelope decoder now validates a rejected array document and answers -32600 (invalid request) when it is
+  well-formed JSON, keeping -32700 for malformed input. `tool_errors` asserts both codes, including `[]`.
 
 ## Stub review
 
