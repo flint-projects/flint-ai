@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test_flint_cli import FLINT, ROOT, environment, flint_json, setUpModule  # noqa: F401
+from test_flint_cli import FLINT, ROOT, codes, environment, flint_json, setUpModule  # noqa: F401
 
 NATIVE_LINKED = 'BEGIN FLINT NATIVE' in (ROOT / 'packages/web/dub.sdl').read_text()
 TOOLS = ['search_api', 'get_symbol', 'get_example', 'explain_error', 'describe_project', 'resolved_config',
@@ -87,7 +87,7 @@ class McpTests(unittest.TestCase):
         try:
             result = self.structured(self.client.call('build', {}))
             self.assertTrue(result['isError'])
-            self.assertEqual(result['structuredContent']['diagnostics'][0]['code'], 'FLINT-E0701')
+            self.assertEqual(codes(result['structuredContent']), ['FLINT-E0701'])
         finally:
             broken.unlink()
         result = self.structured(self.client.call('generate', {'kind': 'entity', 'name': 'Order', 'plan': True}))
