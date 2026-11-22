@@ -3,7 +3,7 @@ module flint.mcp.operations;
 
 import core.atomic : atomicLoad, atomicStore;
 import flint.arena : Buffer, Error, RequestArena, Result, Status;
-import flint.conc : CancelSource, Channel, Context, Deadline, startBackground;
+import flint.conc : Background, CancelSource, Channel, Context, Deadline, startBackground;
 import flint.conc.wait : waitUntil;
 import flint.mcp.jsonrpc : Envelope, Identity, decodeEnvelope, member, readIdentity;
 import flint.mcp.internal.registry : BeginTool;
@@ -87,6 +87,7 @@ final class Operations
     // Frames are written under transport teardown only: a request cancellation must not cut a
     // reply that has started, or the next frame would continue the same stdout line.
     private CancelSource frames;
+    private Background worker;
     private bool opened;
     private shared bool stopping;
     private shared bool stopped;
@@ -123,7 +124,7 @@ final class Operations
 
         move(channel.value, queue);
         move(teardown.value, frames);
-        const started = startBackground(&run);
+        const started = startBackground(&run, worker);
         if (started.code != Status.ok)
         {
             queue.close();
@@ -303,6 +304,7 @@ final class Operations
                 return Error(Status.timedOut, "MCP worker is still retiring pending operations");
             waitUntil(Deadline.afterMillis(1));
         }
+        worker.join();
         foreach (position; 0 .. capacity)
         {
             if (operations[position].occupied)
