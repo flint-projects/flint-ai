@@ -1,11 +1,11 @@
-/// Linux stdio descriptors and subprocess ownership.
+/// Linux and macOS stdio descriptors and subprocess ownership.
 module flint.mcp.sys.stdio;
 
 import core.stdc.errno : EAGAIN, ECHILD, EINTR, EPIPE, errno;
-import core.sys.posix.fcntl : O_CLOEXEC, fcntl;
+import core.sys.posix.fcntl : fcntl;
 import core.sys.posix.poll : POLLIN, POLLOUT, poll, pollfd;
 import core.sys.posix.signal : SIG_BLOCK, SIG_SETMASK, SIGKILL, SIGPIPE, SIGTERM, kill,
-    pthread_sigmask, sigaddset, sigemptyset, sigismember, sigpending, sigset_t, sigtimedwait;
+    pthread_sigmask, sigaddset, sigemptyset, sigismember, sigpending, sigset_t;
 import core.sys.posix.sys.wait : WNOHANG, waitpid;
 import core.sys.posix.time : timespec;
 import core.sys.posix.unistd : _exit, close, dup2, execve, fork, read, write;
@@ -16,10 +16,30 @@ import flint.mcp.types : McpProcessOptions;
 @safe:
 package(flint.mcp):
 
-private extern (C) nothrow @nogc
+version (OSX)
 {
-    int pipe2(ref int[2], int);
-    long syscall(long, ...);
+    // Darwin has no pipe2, close_range, F_DUPFD_CLOEXEC 1030 or sigtimedwait (ADR-024). Children start
+    // through posix_spawn with POSIX_SPAWN_CLOEXEC_DEFAULT, and the input pipe never raises SIGPIPE.
+    import core.sys.posix.spawn : posix_spawn, posix_spawn_file_actions_adddup2,
+        posix_spawn_file_actions_destroy, posix_spawn_file_actions_init,
+        posix_spawn_file_actions_t,
+        posix_spawnattr_destroy, posix_spawnattr_init, posix_spawnattr_setflags, posix_spawnattr_t;
+
+    private enum short spawnCloexecDefault = 0x4000; // POSIX_SPAWN_CLOEXEC_DEFAULT
+    private enum int duplicateCloseOnExec = 67; // F_DUPFD_CLOEXEC
+    private enum int setNoSigPipe = 73; // F_SETNOSIGPIPE
+}
+else
+{
+    import core.sys.posix.signal : sigtimedwait;
+
+    private extern (C) nothrow @nogc
+    {
+        int pipe2(ref int[2], int);
+        long syscall(long, ...);
+    }
+
+    private enum int duplicateCloseOnExec = 1030;
 }
 
 // std.string.toStringz without importing std.string (and std.uni): an empty string yields the address of a
@@ -78,17 +98,14 @@ struct Child
         }
         if (!makePipe(incoming) || !makePipe(outgoing) || !makePipe(errors))
             return Error(Status.ioError, "unable to prepare MCP child stdio");
-        const pid = fork();
-        if (pid == 0)
+        version (OSX)
         {
-            if (dup2(incoming[0], 0) < 0 || dup2(outgoing[1], 1) < 0 || dup2(errors[1], 2) < 0)
-                _exit(126);
-            // close_range(3, UINT_MAX, 0) is syscall 436 on the supported Linux architectures.
-            if (syscall(436L, 3U, uint.max, 0U) < 0)
-                _exit(126);
-            execve(path, argv.ptr, env.ptr);
-            _exit(127);
+            if (fcntl(incoming[1], setNoSigPipe, 1) != 0)
+                return Error(Status.ioError, "unable to prepare MCP child stdio");
+            const pid = spawnChild(path, argv, env, incoming[0], outgoing[1], errors[1]);
         }
+        else
+            const pid = forkChild(path, argv, env, incoming[0], outgoing[1], errors[1]);
         if (pid < 0)
             return Error(Status.ioError, "unable to start MCP child");
         process = pid;
@@ -99,6 +116,58 @@ struct Child
         outgoing[0] = -1;
         errors[0] = -1;
         return Error.init;
+    }
+
+    // SAFETY: The child uses POSIX calls, then exec or _exit without unwinding.
+    private static int forkChild(scope const(char)* path, scope const(char)*[] argv,
+            scope const(char)*[] env, int input, int output, int errors) @trusted nothrow @nogc
+    {
+        const pid = fork();
+        if (pid == 0)
+        {
+            if (dup2(input, 0) < 0 || dup2(output, 1) < 0 || dup2(errors, 2) < 0)
+                _exit(126);
+            version (linux)
+            {
+                // close_range(3, UINT_MAX, 0) is syscall 436 on the supported Linux architectures.
+                if (syscall(436L, 3U, uint.max, 0U) < 0)
+                    _exit(126);
+            }
+            execve(path, argv.ptr, env.ptr);
+            _exit(127);
+        }
+        return pid;
+    }
+
+    version (OSX)
+    {
+        // A failed exec is reported here, before any child exists, instead of as exit status 127.
+        // posix_spawn borrows the terminated path and vectors only during the call.
+        // SAFETY: The attribute and action objects are local and destroyed on every path.
+        private static int spawnChild(scope const(char)* path, scope const(char)*[] argv,
+                scope const(char)*[] env, int input, int output, int errors) @trusted nothrow @nogc
+        {
+            import core.sys.posix.sys.types : pid_t;
+
+            posix_spawnattr_t attributes;
+            posix_spawn_file_actions_t actions;
+            if (posix_spawnattr_init(&attributes) != 0)
+                return -1;
+            scope (exit)
+                posix_spawnattr_destroy(&attributes);
+            if (posix_spawn_file_actions_init(&actions) != 0)
+                return -1;
+            scope (exit)
+                posix_spawn_file_actions_destroy(&actions);
+            pid_t pid;
+            if (posix_spawnattr_setflags(&attributes, spawnCloexecDefault) != 0
+                    || posix_spawn_file_actions_adddup2(&actions,
+                        input, 0) != 0 || posix_spawn_file_actions_adddup2(&actions, output, 1) != 0
+                    || posix_spawn_file_actions_adddup2(&actions, errors, 2) != 0 || posix_spawn(&pid,
+                        path, &actions, &attributes, cast(char**) argv.ptr, cast(char**) env.ptr) != 0)
+                return -1;
+            return pid;
+        }
     }
 
     Error stop(ref Context context) nothrow @nogc
@@ -197,13 +266,29 @@ private Deadline boundedDeadline(ref scope Context context, ulong duration) noth
 // SAFETY: New descriptors are owned by the caller and kept above the standard streams.
 private bool makePipe(ref int[2] descriptors) @trusted nothrow @nogc
 {
-    if (pipe2(descriptors, O_CLOEXEC) != 0)
-        return false;
+    version (OSX)
+    {
+        import core.sys.posix.fcntl : FD_CLOEXEC, F_SETFD;
+        import core.sys.posix.unistd : pipe;
+
+        // Darwin has no pipe2; children start with POSIX_SPAWN_CLOEXEC_DEFAULT, so none inherits these.
+        if (pipe(descriptors) != 0)
+            return false;
+        foreach (descriptor; descriptors)
+            if (fcntl(descriptor, F_SETFD, FD_CLOEXEC) != 0)
+                return false;
+    }
+    else
+    {
+        import core.sys.posix.fcntl : O_CLOEXEC;
+
+        if (pipe2(descriptors, O_CLOEXEC) != 0)
+            return false;
+    }
     foreach (ref descriptor; descriptors)
     {
         if (descriptor >= 3)
             continue;
-        enum duplicateCloseOnExec = 1030;
         const moved = fcntl(descriptor, duplicateCloseOnExec, 3);
         if (moved < 0)
             return false;
@@ -299,32 +384,38 @@ Result!size_t readPipe(int file, int diagnostic, scope ubyte[] output, ref scope
 // SAFETY: The caller blocks only SIGPIPE in its own mask, consumes new SIGPIPE, then restores its mask.
 private long writeFrom(int file, scope const(ubyte)[] input) @trusted nothrow @nogc
 {
-    sigset_t blocked;
-    sigset_t previous;
-    sigset_t pending;
-    if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGPIPE) != 0 || pthread_sigmask(SIG_BLOCK,
-            &blocked, &previous) != 0)
+    // Darwin raises SIGPIPE at the process; the input pipe is marked F_SETNOSIGPIPE at launch instead.
+    version (OSX)
+        return write(file, input.ptr, input.length);
+    else
     {
-        errno = EPIPE;
-        return -1;
-    }
-    if (sigpending(&pending) != 0)
-    {
+        sigset_t blocked;
+        sigset_t previous;
+        sigset_t pending;
+        if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGPIPE) != 0
+                || pthread_sigmask(SIG_BLOCK, &blocked, &previous) != 0)
+        {
+            errno = EPIPE;
+            return -1;
+        }
+        if (sigpending(&pending) != 0)
+        {
+            pthread_sigmask(SIG_SETMASK, &previous, null);
+            errno = EPIPE;
+            return -1;
+        }
+        const pendingBefore = sigismember(&pending, SIGPIPE) == 1;
+        const sent = write(file, input.ptr, input.length);
+        const failure = errno;
+        if (sent < 0 && failure == EPIPE && !pendingBefore)
+        {
+            timespec immediate;
+            sigtimedwait(&blocked, null, &immediate);
+        }
         pthread_sigmask(SIG_SETMASK, &previous, null);
-        errno = EPIPE;
-        return -1;
+        errno = failure;
+        return sent;
     }
-    const pendingBefore = sigismember(&pending, SIGPIPE) == 1;
-    const sent = write(file, input.ptr, input.length);
-    const failure = errno;
-    if (sent < 0 && failure == EPIPE && !pendingBefore)
-    {
-        timespec immediate;
-        sigtimedwait(&blocked, null, &immediate);
-    }
-    pthread_sigmask(SIG_SETMASK, &previous, null);
-    errno = failure;
-    return sent;
 }
 
 Error writePipe(int file, int diagnostic, scope const(ubyte)[] input, ref scope Context context) nothrow @nogc
