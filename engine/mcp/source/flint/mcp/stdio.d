@@ -4,8 +4,8 @@ module flint.mcp.stdio;
 import flint.arena : Error, Result, Status;
 import flint.conc : Context, Deadline;
 import flint.conc.wait : waitUntil;
-import flint.mcp.jsonrpc : Identity;
-import flint.mcp.operations : Operations, cancellationRequest;
+import flint.mcp.jsonrpc : Identity, decodeEnvelope;
+import flint.mcp.operations : Operations, cancellation;
 import flint.mcp.protocol : Headers, Protocol;
 import flint.mcp.sys.stdio : readPipe, writePipe;
 import flint.mcp.sys.storage : releaseStorage, reserveStorage;
@@ -152,15 +152,17 @@ final class StdioEndpoint
                     && frame.error.code != Status.resourceExhausted) || (frame.ok() && !frame.value))
                 return frame.error;
             scope message = line[0 .. frame.value];
+            // Decode once: the same envelope classifies cancellation and travels to the worker.
+            const parsed = decodeEnvelope(message, maximum);
             Identity id;
-            if (cancellationRequest(message, maximum, id))
+            if (cancellation(message, parsed, id))
             {
                 if (id.present)
                     operations.cancel(id, null);
                 continue;
             }
 
-            const posted = operations.submit(message, headers, context, false, true);
+            const posted = operations.submitDecoded(message, parsed, headers, context, false, true);
             if (!posted.ok())
                 return posted.error;
         }

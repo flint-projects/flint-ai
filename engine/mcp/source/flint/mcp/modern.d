@@ -45,15 +45,12 @@ private struct Entries
     }
 }
 
-Metadata metadata(scope const(ubyte)[] params) nothrow @nogc
+/// Read the value of a request's params `_meta` member. An absent member is empty.
+Metadata metadata(scope const(ubyte)[] raw) nothrow @nogc
 {
     Metadata value;
-    if (params.length == 0)
+    if (raw.length == 0)
         return value;
-    const located = member(params, "_meta");
-    if (!located.ok() || !located.value.present())
-        return value;
-    const raw = located.value.get(params);
     Entries fields;
     if (inspect(raw, &fields.read).code != Status.ok)
         return value;

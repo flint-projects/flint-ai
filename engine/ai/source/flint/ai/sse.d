@@ -55,16 +55,10 @@ nothrow:
         feeding = true;
         scope (exit)
             feeding = false;
-        foreach (value; input)
-        {
-            auto accepted = accept(value, consumer);
-            if (accepted.code != Status.ok)
-            {
-                failure = accepted.code;
-                return accepted;
-            }
-        }
-        return Error.init;
+        auto accepted = scan(input, consumer);
+        if (accepted.code != Status.ok)
+            failure = accepted.code;
+        return accepted;
     }
 
     /// Confirm that the transport ended between complete events.
@@ -83,22 +77,72 @@ nothrow:
         assert(!original.feeding, "cannot move an active SSE parser");
     }
 
-    private Error accept(ubyte value, scope SseConsumer consumer) scope
+    // Lines are located in bulk. A line that ends inside the current fragment is parsed in place and
+    // only a line split across fragments is staged, so the hot path copies each data byte once.
+    private Error scan(scope const(ubyte)[] input, scope SseConsumer consumer) scope
     {
-        const suppress = skipLf && value == '\n';
-        skipLf = value == '\r';
-        if (suppress)
-            return Error.init;
-        if (value == '\r' || value == '\n')
+        size_t cursor;
+        while (cursor < input.length)
         {
-            const result = completeLine(lineBytes[0 .. lineLength], consumer);
-            lineLength = 0;
-            return result;
+            if (skipLf)
+            {
+                skipLf = false;
+                if (input[cursor] == '\n')
+                {
+                    ++cursor;
+                    continue;
+                }
+            }
+            const end = terminator(input, cursor);
+            const run = end - cursor;
+            if (run > lineBytes.length - lineLength)
+                return Error(Status.resourceExhausted, "SSE line exceeds the configured limit");
+            if (end == input.length)
+            {
+                lineBytes[lineLength .. lineLength + run] = input[cursor .. end];
+                lineLength += run;
+                return Error.init;
+            }
+            skipLf = input[end] == '\r';
+            Error result;
+            if (lineLength == 0)
+                result = completeLine(input[cursor .. end], consumer);
+            else
+            {
+                lineBytes[lineLength .. lineLength + run] = input[cursor .. end];
+                const staged = lineLength + run;
+                lineLength = 0;
+                result = completeLine(lineBytes[0 .. staged], consumer);
+            }
+            if (result.code != Status.ok)
+                return result;
+            cursor = end + 1;
         }
-        if (lineLength == lineBytes.length)
-            return Error(Status.resourceExhausted, "SSE line exceeds the configured limit");
-        lineBytes[lineLength++] = value;
         return Error.init;
+    }
+
+    /// Index of the next CR or LF at or after `cursor`, or `input.length`.
+    private static size_t terminator(scope const(ubyte)[] input, size_t cursor) pure
+    {
+        enum ulong ones = 0x0101_0101_0101_0101UL;
+        enum ulong highs = 0x8080_8080_8080_8080UL;
+        while (input.length - cursor >= 8)
+        {
+            const ubyte[8] lane = input[cursor .. cursor + 8];
+            ulong word;
+            static foreach (shift; 0 .. 8)
+                word |= cast(ulong) lane[shift] << (shift * 8);
+            const lf = word ^ (ones * '\n');
+            const cr = word ^ (ones * '\r');
+            // A zero byte in either XOR marks a terminator. The test may report a false candidate
+            // only above a true zero byte, so the byte loop below resolves the exact position.
+            if ((((lf - ones) & ~lf) | ((cr - ones) & ~cr)) & highs)
+                break;
+            cursor += 8;
+        }
+        while (cursor < input.length && input[cursor] != '\r' && input[cursor] != '\n')
+            ++cursor;
+        return cursor;
     }
 
     private Error completeLine(scope const(ubyte)[] line, scope SseConsumer consumer) scope

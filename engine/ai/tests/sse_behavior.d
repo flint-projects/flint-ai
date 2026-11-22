@@ -71,3 +71,59 @@ unittest
     assert(stopped.feed(cast(const(ubyte)[]) "data:abc\n\ndata:def\n\n", reject).code == Status.cancelled);
     assert(stopped.feed(null, reject).code == Status.cancelled && calls == 1);
 }
+
+@("every two-cut fragmentation of mixed terminators and long lines matches the whole stream")
+unittest
+{
+    enum wire = "event: alpha\r\ndata: 0123456789abcdef0123456789\rdata: é🦊xyz\n\r\n: comment line here\n"
+        ~ "data:01234567\r\n\r\nevent:beta\ndata\ndata: 76543210fedcba9876543210\n\n";
+    const input = cast(const(ubyte)[]) wire;
+    foreach (first; 0 .. input.length + 1)
+        foreach (second; first .. input.length + 1)
+        {
+            ubyte[40] line, event;
+            scope SseParser parser = SseParser(line[], event[]);
+            uint seen;
+            scope collect = (scope const(char)[] type, scope const(ubyte)[] bytes) @safe nothrow @nogc {
+                const text = cast(const(char)[]) bytes;
+                ++seen;
+                assert((seen == 1 && type == "alpha" && text == "0123456789abcdef0123456789\né🦊xyz")
+                        || (seen == 2 && type == "message" && text == "01234567") || (seen == 3
+                            && type == "beta" && text == "\n76543210fedcba9876543210"));
+                return Error.init;
+            };
+            assert(parser.feed(input[0 .. first], collect).code == Status.ok);
+            assert(parser.feed(input[first .. second], collect).code == Status.ok);
+            assert(parser.feed(input[second .. $], collect).code == Status.ok);
+            assert(parser.finish().code == Status.ok && seen == 3);
+        }
+}
+
+@("the line limit is exact whether a line arrives whole or across fragments")
+unittest
+{
+    enum fits = "data: 0123456789abcdefghij\n\n";
+    enum over = "data: 0123456789abcdefghijk\n\n";
+    foreach (split; 0 .. over.length + 1)
+    {
+        ubyte[26] line;
+        ubyte[32] event;
+        uint seen;
+        scope count = (scope const(char)[], scope const(ubyte)[]) @safe nothrow @nogc {
+            ++seen;
+            return Error.init;
+        };
+        if (split <= fits.length)
+        {
+            scope SseParser accepted = SseParser(line[], event[]);
+            assert(accepted.feed(cast(const(ubyte)[]) fits[0 .. split], count).code == Status.ok);
+            assert(accepted.feed(cast(const(ubyte)[]) fits[split .. $], count).code == Status.ok);
+            assert(accepted.finish().code == Status.ok && seen == 1);
+        }
+        seen = 0;
+        scope SseParser rejected = SseParser(line[], event[]);
+        const head = rejected.feed(cast(const(ubyte)[]) over[0 .. split], count);
+        const tail = head.code == Status.ok ? rejected.feed(cast(const(ubyte)[]) over[split .. $], count) : head;
+        assert(tail.code == Status.resourceExhausted && seen == 0);
+    }
+}

@@ -5,14 +5,14 @@ import flint.arena : Buffer, Error, RequestArena, Result, Status;
 import flint.conc : Context;
 import flint.mcp.header_values : matchesHeader;
 import flint.mcp.jsonrpc : Emit, Envelope, Identity, Range, append, decodeEnvelope, headerMismatch,
-    internalError, invalidParameters, invalidRequest, isObject, malformed, maxMessage, maxResource,
-    member, methodNotFound, pack, parseError, quote, readString, unsupportedVersion, writeId;
+    inspect, internalError, invalidParameters, invalidRequest, isObject, malformed, maxMessage,
+    maxResource, methodNotFound, pack, parseError, quote, readString, unsupportedVersion, writeId;
 import flint.mcp.legacy : LegacyPhase, LegacySession, SessionKey, legacyRevision, validateInitialize;
 import flint.mcp.modern : Metadata, endModernResult, metadata, modernRevision, writeInfo;
 import flint.mcp.internal.registry : BeginTool, Registry;
 import flint.mcp.types : McpOptions, ProtocolRevision, ToolResult;
 import flint.serde : DecodeOptions;
-import flint.serde.json_visit : visitJsonArray;
+import flint.serde.json_visit : JsonMemberName, visitJsonArray;
 import flint.serde.json_write : JsonWriter;
 
 @safe:
@@ -42,6 +42,41 @@ private struct Call
 {
     Envelope data;
     bool modern;
+}
+
+/// Every params member the dispatcher reads, located by one scan of the params object.
+private struct ParamFields
+{
+    Range metaMember;
+    Range name;
+    Range uri;
+    Range arguments;
+    Range cursor;
+    bool valid;
+    /// Decoded `_meta` protocol fields.
+    Metadata meta;
+
+    void scan(scope const(ubyte)[] params) scope nothrow @nogc
+    {
+        valid = inspect(params, &field).code == Status.ok;
+        meta = metadata(valid ? metaMember.get(params) : null);
+    }
+
+    private Error field(scope JsonMemberName key, size_t offset, size_t length) scope nothrow @nogc
+    {
+        const span = Range(offset, length);
+        if (key.isName("_meta"))
+            metaMember = span;
+        else if (key.isName("name"))
+            name = span;
+        else if (key.isName("uri"))
+            uri = span;
+        else if (key.isName("arguments"))
+            arguments = span;
+        else if (key.isName("cursor"))
+            cursor = span;
+        return Error.init;
+    }
 }
 
 final class Protocol
@@ -86,6 +121,14 @@ final class Protocol
             scope BeginTool admitted = null) scope nothrow @nogc
     {
         const parsed = decodeEnvelope(message, limits.maxMessageBytes);
+        return dispatchEnvelope(parsed, message, headers, work, output, context, admitted);
+    }
+
+    /// Dispatch a message whose envelope the transport already decoded with this server's byte limit.
+    Reply dispatchEnvelope(scope const ref Result!Envelope parsed, scope const(ubyte)[] message,
+            scope const ref Headers headers, ref scope RequestArena work, ref scope RequestArena output,
+            ref Context context, scope BeginTool admitted = null) scope nothrow @nogc
+    {
         if (!parsed.ok())
         {
             const fault = parsed.error.offset == size_t.max ? invalidRequest : parseError;
@@ -95,16 +138,17 @@ final class Protocol
         if (data.methodLength == 0)
             return fail(output, Identity.init, 400, invalidRequest, "Expected a JSON-RPC request");
         const params = data.params.get(message);
-        const meta = metadata(params);
+        ParamFields fields;
+        fields.scan(params);
         const verb = data.verb();
 
-        if (modernOpening(meta, headers, verb))
-            return modern(data, params, meta, headers, work, output, context, admitted);
+        if (modernOpening(fields.meta, headers, verb))
+            return modern(data, params, fields, headers, work, output, context, admitted);
         if (supportsLegacy() && legacyOpening(headers, verb))
-            return legacy(data, params, headers, work, output, context, admitted);
+            return legacy(data, params, fields, headers, work, output, context, admitted);
         if (!supportsModern())
             return fail(output, data.id, 400, invalidRequest, "Legacy initialize is required");
-        return modern(data, params, meta, headers, work, output, context, admitted);
+        return modern(data, params, fields, headers, work, output, context, admitted);
     }
 
     private bool legacyOpening(scope const ref Headers headers, scope const(char)[] verb) const scope pure nothrow @nogc
@@ -113,36 +157,37 @@ final class Protocol
                 && stdioPhase != LegacyPhase.initial);
     }
 
-    private Reply modern(scope const ref Envelope data, scope const(ubyte)[] params,
-            scope const ref Metadata meta, scope const ref Headers headers, ref scope RequestArena work,
-            ref scope RequestArena output, ref Context context, scope BeginTool admitted) scope nothrow @nogc
+    nothrow @nogc private Reply modern(scope const ref Envelope data, scope const(ubyte)[] params,
+            scope const ref ParamFields fields, scope const ref Headers headers, ref scope RequestArena work,
+            ref scope RequestArena output, ref Context context, scope BeginTool admitted) scope
     {
         if (!supportsModern())
             return fail(output, data.id, 400, methodNotFound, "Legacy initialize is required");
-        if (headers.invalid || (headers.http && headerConflicts(data, meta, headers)))
+        scope const meta = &fields.meta;
+        if (headers.invalid || (headers.http && headerConflicts(data, *meta, headers)))
             return fail(output, data.id, 400, headerMismatch, "MCP headers do not match the request");
         if (!meta.valid)
             return fail(output, data.id, 400, invalidParameters, "Missing or invalid MCP client metadata");
         if (meta.revision() != modernRevision)
             return versionFault(output, data.id, meta.revision());
 
-        if (headers.http && !matchingName(data.verb(), params, headers.name))
+        if (headers.http && !matchingName(data.verb(), params, fields, headers.name))
             return fail(output, data.id, 400, headerMismatch, "Mcp-Name does not match the request");
         if (!data.id.present)
             return fail(output, Identity.init, 400, invalidRequest, "Modern MCP requires a request ID");
-        return accept(Call(data, true), params, work, output, context, admitted);
+        return accept(Call(data, true), params, fields, work, output, context, admitted);
     }
 
-    private Reply legacy(scope const ref Envelope data, scope const(ubyte)[] params,
-            scope const ref Headers headers, ref scope RequestArena work, ref scope RequestArena output,
-            ref Context context, scope BeginTool admitted) scope nothrow @nogc
+    nothrow @nogc private Reply legacy(scope const ref Envelope data, scope const(ubyte)[] params,
+            scope const ref ParamFields fields, scope const ref Headers headers, ref scope RequestArena work,
+            ref scope RequestArena output, ref Context context, scope BeginTool admitted) scope
     {
         if (headers.invalid)
             return fail(output, data.id, 400, invalidRequest, "Invalid legacy HTTP headers");
         if (data.verb() == "initialize")
             return initialize(data, params, headers, output);
         if (!headers.http)
-            return legacyPhase(data, params, stdioPhase, work, output, context, admitted);
+            return legacyPhase(data, params, fields, stdioPhase, work, output, context, admitted);
         if (headers.release.length != 0 && headers.release != legacyRevision)
             return fail(output, data.id, 400, invalidRequest, "Invalid legacy HTTP protocol version");
         if (headers.session.length == 0)
@@ -150,14 +195,14 @@ final class Protocol
         foreach (ref session; sessions[0 .. limits.maxInFlight])
         {
             if (session.recognizes(headers.session))
-                return legacyPhase(data, params, session.phase, work, output, context, admitted);
+                return legacyPhase(data, params, fields, session.phase, work, output, context, admitted);
         }
         return fail(output, data.id, 404, invalidRequest, "Unknown legacy MCP session");
     }
 
-    private Reply legacyPhase(scope const ref Envelope data, scope const(ubyte)[] params,
-            ref LegacyPhase phase, ref scope RequestArena work, ref scope RequestArena output,
-            ref Context context, scope BeginTool admitted) scope nothrow @nogc
+    nothrow @nogc private Reply legacyPhase(scope const ref Envelope data, scope const(ubyte)[] params,
+            scope const ref ParamFields fields, ref LegacyPhase phase, ref scope RequestArena work,
+            ref scope RequestArena output, ref Context context, scope BeginTool admitted) scope
     {
         if (data.verb() == "notifications/initialized" && !data.id.present && phase == LegacyPhase.awaitingInitialized)
         {
@@ -168,7 +213,7 @@ final class Protocol
             return fail(output, data.id, 400, invalidRequest, "Legacy initialization is incomplete");
         if (!data.id.present)
             return Reply(202);
-        return accept(Call(data, false), params, work, output, context, admitted);
+        return accept(Call(data, false), params, fields, work, output, context, admitted);
     }
 
     private Reply initialize(scope const ref Envelope data, scope const(ubyte)[] params,
@@ -203,8 +248,9 @@ final class Protocol
         return fail(output, data.id, 503, internalError, "MCP session capacity reached");
     }
 
-    private Reply accept(const Call call, scope const(ubyte)[] params, ref scope RequestArena work,
-            ref scope RequestArena output, ref Context context, scope BeginTool admitted) scope nothrow @nogc
+    nothrow @nogc private Reply accept(const Call call, scope const(ubyte)[] params,
+            scope const ref ParamFields fields, ref scope RequestArena work,
+            ref scope RequestArena output, ref Context context, scope BeginTool admitted) scope
     {
         switch (call.data.verb())
         {
@@ -215,13 +261,13 @@ final class Protocol
                 return discovery(output, call);
             break;
         case "tools/list":
-            return list(output, call, params, true);
+            return list(output, call, params, fields, true);
         case "resources/list":
-            return list(output, call, params, false);
+            return list(output, call, params, fields, false);
         case "tools/call":
-            return invoke(work, output, call, params, context, admitted);
+            return invoke(work, output, call, params, fields, context, admitted);
         case "resources/read":
-            return readResource(work, output, call, params, context);
+            return readResource(work, output, call, params, fields, context);
         default:
             break;
         }
@@ -249,19 +295,18 @@ final class Protocol
     }
 
     private Reply list(ref scope RequestArena output, scope const ref Call call,
-            scope const(ubyte)[] params, bool selectTools) scope nothrow @nogc
+            scope const(ubyte)[] params, scope const ref ParamFields fields, bool selectTools) scope nothrow @nogc
     {
         size_t start;
         if (params.length != 0)
         {
-            const cursor = member(params, "cursor");
-            if (!cursor.ok())
+            if (!fields.valid)
                 return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP list parameters");
-            if (cursor.value.present())
+            if (fields.cursor.present())
             {
                 char[40] value;
                 size_t length;
-                if (!readString(cursor.value.get(params), value[], length))
+                if (!readString(fields.cursor.get(params), value[], length))
                     return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP list cursor");
                 start = registry.position(value[0 .. length], selectTools);
                 if (start == size_t.max)
@@ -274,21 +319,18 @@ final class Protocol
     }
 
     nothrow @nogc private Reply invoke(ref scope RequestArena work, ref scope RequestArena output,
-            scope const ref Call call, scope const(ubyte)[] params, ref Context context, scope BeginTool admitted) scope
+            scope const ref Call call, scope const(ubyte)[] params, scope const ref ParamFields fields,
+            ref Context context, scope BeginTool admitted) scope
     {
-        const location = member(params, "name");
         char[maxResource] name;
         size_t length;
-        if (!location.ok() || !readString(location.value.get(params), name[], length))
+        if (!fields.valid || !readString(fields.name.get(params), name[], length))
             return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP tool name");
         const tool = registry.findTool(name[0 .. length]);
         if (tool.action is null)
             return fail(output, call.data.id, 400, invalidParameters, "Unknown MCP tool");
-        const fields = member(params, "arguments");
-        if (!fields.ok())
-            return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP tool arguments");
         const none = cast(const(ubyte)[]) "{}";
-        const args = fields.value.present() ? fields.value.get(params) : none;
+        const args = fields.arguments.present() ? fields.arguments.get(params) : none;
         const checked = tool.action(args, work, context, admitted);
         if (checked.badArguments)
             return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP tool arguments");
@@ -300,21 +342,27 @@ final class Protocol
     private Reply encodeToolResult(ref scope RequestArena work, ref scope RequestArena output,
             scope const ref Call call, const ToolResult result) scope nothrow @nogc
     {
-        Status blocks;
-        Status fieldsStatus;
+        // Validate provider JSON once; the measuring and writing passes then copy checked bytes.
+        const blocks = result.content.length() == 0 ? Status.ok : checkJson(work, result.content, false);
+        const fieldsStatus = result.structuredContent.length() == 0 ? Status.ok : checkJson(work,
+                result.structuredContent, true);
+        if (blocks != Status.ok || fieldsStatus != Status.ok)
+            return fail(output, call.data.id, 500, internalError, "Invalid output from MCP tool provider");
+        Status copied;
         auto response = complete(output, call, (ref scope JsonWriter writer) @safe nothrow @nogc {
             append(writer, result.isError ? `"isError":true,"content":` : `"isError":false,"content":`);
             if (result.content.length() == 0)
                 append(writer, "[]");
             else
-                blocks = appendChecked(work, result.content, writer, false);
+                copied = appendRaw(work, result.content, writer);
             if (result.structuredContent.length() != 0)
             {
                 append(writer, `,"structuredContent":`);
-                fieldsStatus = appendChecked(work, result.structuredContent, writer, true);
+                const structured = appendRaw(work, result.structuredContent, writer);
+                copied = copied == Status.ok ? structured : copied;
             }
         });
-        if (blocks != Status.ok || fieldsStatus != Status.ok)
+        if (copied != Status.ok)
             return fail(output, call.data.id, 500, internalError, "Invalid output from MCP tool provider");
         return response;
     }
@@ -329,12 +377,12 @@ final class Protocol
     }
 
     private Reply readResource(ref scope RequestArena work, ref scope RequestArena output,
-            scope const ref Call call, scope const(ubyte)[] params, ref Context context) scope nothrow @nogc
+            scope const ref Call call, scope const(ubyte)[] params, scope const ref ParamFields fields,
+            ref Context context) scope nothrow @nogc
     {
-        const location = member(params, "uri");
         char[maxResource] uri;
         size_t length;
-        if (!location.ok() || !readString(location.value.get(params), uri[], length))
+        if (!fields.valid || !readString(fields.uri.get(params), uri[], length))
             return fail(output, call.data.id, 400, invalidParameters, "Invalid MCP resource URI");
         const resource = registry.findResource(uri[0 .. length]);
         if (resource.action is null)
@@ -437,37 +485,41 @@ nothrow @nogc private bool headerConflicts(scope const ref Envelope data, scope 
             && headers.release != meta.revision());
 }
 
-nothrow @nogc private Status appendChecked(ref scope RequestArena arena, Buffer handle,
-        ref scope JsonWriter writer, bool object)
+nothrow @nogc private Status checkJson(ref scope RequestArena arena, Buffer handle, bool object)
 {
     Status result;
     const code = arena.read(handle, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
         if (object ? !isObject(bytes) : visitJsonArray(bytes,
             (scope const(ubyte)[])@safe nothrow @nogc => Error.init).code != Status.ok)
             result = Status.invalidArgument;
-        else
-            writer.append(bytes);
     });
     return code == Status.ok ? result : code;
 }
 
-private bool matchingName(scope const(char)[] verb, scope const(ubyte)[] params, scope const(char)[] wire) nothrow @nogc
+nothrow @nogc private Status appendRaw(ref scope RequestArena arena, Buffer handle, ref scope JsonWriter writer)
 {
-    string key;
+    return arena.read(handle, (scope const(ubyte)[] bytes) @safe nothrow @nogc {
+        writer.append(bytes);
+    });
+}
+
+private bool matchingName(scope const(char)[] verb, scope const(ubyte)[] params,
+        scope const ref ParamFields fields, scope const(char)[] wire) nothrow @nogc
+{
+    Range location;
     switch (verb)
     {
     case "tools/call", "prompts/get":
-        key = "name";
+        location = fields.name;
         break;
     case "resources/read":
-        key = "uri";
+        location = fields.uri;
         break;
     default:
         return wire.length == 0;
     }
-    const location = member(params, key);
     char[maxResource] name;
     size_t length;
-    return location.ok() && readString(location.value.get(params), name[], length) && length != 0
+    return fields.valid && readString(location.get(params), name[], length) && length != 0
         && matchesHeader(wire, name[0 .. length]);
 }

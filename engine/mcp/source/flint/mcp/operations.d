@@ -5,7 +5,8 @@ import core.atomic : atomicLoad, atomicStore;
 import flint.arena : Buffer, Error, RequestArena, Result, Status;
 import flint.conc : CancelSource, Channel, Context, Deadline, startBackground;
 import flint.conc.wait : waitUntil;
-import flint.mcp.jsonrpc : Identity, decodeEnvelope, member, readIdentity;
+import flint.mcp.jsonrpc : Envelope, Identity, decodeEnvelope, member, readIdentity;
+import flint.mcp.internal.registry : BeginTool;
 import flint.mcp.protocol : Headers, Protocol, Reply;
 import flint.mcp.sys.storage : releaseStorage, reserveStorage;
 
@@ -60,6 +61,11 @@ private struct Operation
     shared bool completed;
     size_t length;
     Identity id;
+    // The owner's decoding of the copied input, reused by the worker when present.
+    Envelope envelope;
+    Status envelopeStatus;
+    size_t envelopeOffset;
+    bool decoded;
     InputMetadata metadata;
     CancelSource cancellation;
     Reply reply;
@@ -78,6 +84,9 @@ final class Operations
     private Operation[64] operations;
     private Channel!uint queue;
     private StdioOutput stdio;
+    // Frames are written under transport teardown only: a request cancellation must not cut a
+    // reply that has started, or the next frame would continue the same stdout line.
+    private CancelSource frames;
     private bool opened;
     private shared bool stopping;
     private shared bool stopped;
@@ -103,13 +112,22 @@ final class Operations
             releaseStorage(bytes);
             return channel.error;
         }
+        auto teardown = CancelSource.create(Context.init, Deadline.none());
+        if (!teardown.ok())
+        {
+            queue.close();
+            releaseStorage(bytes);
+            return teardown.error;
+        }
         import core.lifetime : move;
 
         move(channel.value, queue);
+        move(teardown.value, frames);
         const started = startBackground(&run);
         if (started.code != Status.ok)
         {
             queue.close();
+            frames.close();
             releaseStorage(bytes);
             return started;
         }
@@ -120,19 +138,35 @@ final class Operations
     Result!uint submit(scope const(ubyte)[] document, scope const ref Headers headers, ref Context parent,
             bool legacy, bool detach = false) nothrow @nogc
     {
+        const cancellable = legacy || !headers.http;
+        Result!Envelope parsed;
+        if (cancellable && opened && !atomicLoad(stopping) && document.length <= maximum)
+            parsed = decodeEnvelope(document, maximum);
+        return admit(document, parsed, cancellable, headers, parent, legacy, detach);
+    }
+
+    /// Submit input whose envelope the owner already decoded with this queue's byte limit.
+    Result!uint submitDecoded(scope const(ubyte)[] document, scope const ref Result!Envelope parsed,
+            scope const ref Headers headers, ref Context parent, bool legacy, bool detach = false) nothrow @nogc
+    {
+        return admit(document, parsed, true, headers, parent, legacy, detach);
+    }
+
+    private Result!uint admit(scope const(ubyte)[] document, scope const ref Result!Envelope parsed,
+            bool decoded, scope const ref Headers headers, ref Context parent, bool legacy, bool detach) nothrow @nogc
+    {
         if (!opened || atomicLoad(stopping) || document.length > maximum)
             return Result!uint(uint.max, Error(Status.conflict, "MCP operation queue is closed"));
         Identity id;
         const cancellable = legacy || !headers.http;
         if (cancellable)
         {
-            const identity = decodeEnvelope(document, maximum);
-            id = identity.ok() ? identity.value.id : Identity.init;
+            id = parsed.ok() ? parsed.value.id : Identity.init;
             if (id.present && activeId(id, headers.session))
                 return Result!uint(uint.max, Error(Status.conflict, "MCP request ID is already active"));
         }
 
-        const position = admit();
+        const position = vacancy();
         if (position == uint.max)
             return Result!uint(uint.max, Error(Status.resourceExhausted, "MCP operation queue is full"));
         scope operation = &operations[position];
@@ -149,6 +183,13 @@ final class Operations
         operation.metadata.store(headers);
         operation.cancellable = cancellable;
         operation.id = id;
+        operation.decoded = decoded;
+        if (decoded)
+        {
+            operation.envelope = parsed.value;
+            operation.envelopeStatus = parsed.error.code;
+            operation.envelopeOffset = parsed.error.offset;
+        }
         operation.occupied = true;
         operation.detached = detach;
         atomicStore(operation.began, false);
@@ -162,7 +203,7 @@ final class Operations
         return Result!uint(position);
     }
 
-    private uint admit() nothrow @nogc
+    private uint vacancy() nothrow @nogc
     {
         foreach (position; 0 .. capacity)
         {
@@ -249,6 +290,7 @@ final class Operations
             return Error.init;
         atomicStore(stopping, true);
         queue.close();
+        frames.cancel();
         foreach (ref operation; operations[0 .. capacity])
         {
             if (operation.occupied)
@@ -266,6 +308,7 @@ final class Operations
             if (operations[position].occupied)
                 retire(position);
         }
+        frames.close();
         releaseStorage(bytes);
         opened = false;
         return Error.init;
@@ -317,8 +360,16 @@ final class Operations
             operation.reply.status = protocol.terminate(headers.session);
             return;
         }
-        operation.reply = protocol.dispatch(storage[0 .. operation.length], headers, work, output,
-                context, () @safe nothrow @nogc { atomicStore(operation.began, true); });
+        scope BeginTool began = () @safe nothrow @nogc { atomicStore(operation.began, true); };
+        const message = storage[0 .. operation.length];
+        if (operation.decoded)
+        {
+            const parsed = Result!Envelope(operation.envelope, Error(operation.envelopeStatus,
+                    "invalid JSON-RPC envelope", operation.envelopeOffset));
+            operation.reply = protocol.dispatchEnvelope(parsed, message, headers, work, output, context, began);
+        }
+        else
+            operation.reply = protocol.dispatch(message, headers, work, output, context, began);
         if (context.cancelled())
         {
             operation.reply.error = Error(Status.cancelled, "MCP operation was cancelled");
@@ -329,8 +380,9 @@ final class Operations
         const borrowed = output.read(operation.reply.body, (scope const(ubyte)[] response) @safe nothrow @nogc {
             if (stdio !is null)
             {
-                const sent = stdio(response, context);
-                if (sent.code != Status.ok && sent.code != Status.cancelled)
+                auto transport = frames.context();
+                const sent = stdio(response, transport);
+                if (sent.code != Status.ok && !atomicLoad(stopping))
                     atomicStore(failureStatus, cast(int) sent.code);
             }
             else
@@ -347,11 +399,17 @@ final class Operations
 bool cancellationRequest(scope const(ubyte)[] document, size_t maximum, out Identity target) nothrow @nogc
 {
     const message = decodeEnvelope(document, maximum);
-    if (!message.ok() || message.value.id.present || message.value.verb() != "notifications/cancelled")
+    return cancellation(document, message, target);
+}
+
+/// Classify an already decoded envelope as a cancellation notification.
+bool cancellation(scope const(ubyte)[] raw, scope const ref Result!Envelope parsed, out Identity id) nothrow @nogc
+{
+    if (!parsed.ok() || parsed.value.id.present || parsed.value.verb() != "notifications/cancelled")
         return false;
-    const params = message.value.params.get(document);
+    const params = parsed.value.params.get(raw);
     const request = member(params, "requestId");
-    if (!request.ok() || !readIdentity(request.value.get(params), target))
-        target = Identity.init;
+    if (!request.ok() || !readIdentity(request.value.get(params), id))
+        id = Identity.init;
     return true;
 }
