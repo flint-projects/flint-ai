@@ -12,7 +12,6 @@ import core.sys.posix.unistd : _exit, close, dup2, execve, fork, read, write;
 import flint.arena : Error, Result, Status;
 import flint.conc : Context, Deadline;
 import flint.mcp.types : McpProcessOptions;
-import std.string : toStringz;
 
 @safe:
 package(flint.mcp):
@@ -21,6 +20,19 @@ private extern (C) nothrow @nogc
 {
     int pipe2(ref int[2], int);
     long syscall(long, ...);
+}
+
+// std.string.toStringz without importing std.string (and std.uni): an empty string yields the address of a
+// NUL-terminated literal, anything else a fresh NUL-terminated copy.
+// SAFETY: The returned pointer addresses a GC copy that nothing else references, or a string literal.
+private immutable(char)* toStringz(scope const(char)[] text) @trusted pure nothrow
+{
+    if (text.length == 0)
+        return "".ptr;
+    auto copy = new char[text.length + 1];
+    copy[0 .. text.length] = text[];
+    copy[text.length] = 0;
+    return cast(immutable(char)*) copy.ptr;
 }
 
 struct Child
