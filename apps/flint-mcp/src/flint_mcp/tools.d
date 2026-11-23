@@ -11,7 +11,8 @@ import flint.validate : NotBlank;
 struct Query
 {
     /// Words, or a qualified name.
-    @NotBlank string query;
+    @NotBlank
+    string query;
     /// Maximum symbols.
     uint limit = 10;
 }
@@ -20,14 +21,16 @@ struct Query
 struct SymbolName
 {
     /// Qualified name, such as flint.config.load.
-    @NotBlank string name;
+    @NotBlank
+    string name;
 }
 
 /// get_example input.
 struct Topic
 {
     /// Topic words.
-    @NotBlank string topic;
+    @NotBlank
+    string topic;
     /// Maximum examples.
     uint limit = 5;
 }
@@ -36,7 +39,8 @@ struct Topic
 struct Code
 {
     /// Diagnostic code, such as FLINT-E0401.
-    @NotBlank string code;
+    @NotBlank
+    string code;
 }
 
 /// Tools without input.
@@ -55,7 +59,8 @@ struct Profile
 struct Component
 {
     /// entity, repository, service, controller, config, migration or agents.
-    @NotBlank string kind;
+    @NotBlank
+    string kind;
     /// PascalCase name (empty for agents).
     string name;
     /// Only show what would be written.

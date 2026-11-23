@@ -31,7 +31,8 @@ private struct Content
 private struct Call
 {
     Text id;
-    @JsonRequired Text name;
+    @JsonRequired
+    Text name;
     bool willContinue;
 }
 

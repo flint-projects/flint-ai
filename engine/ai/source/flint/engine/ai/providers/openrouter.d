@@ -41,13 +41,16 @@ private enum Finish : ubyte
 
 private struct Usage
 {
-    @JsonRequired uint prompt_tokens;
-    @JsonRequired uint completion_tokens;
+    @JsonRequired
+    uint prompt_tokens;
+    @JsonRequired
+    uint completion_tokens;
 }
 
 private struct Choice
 {
-    @JsonRequired uint index;
+    @JsonRequired
+    uint index;
 }
 
 private struct FunctionDelta
@@ -58,9 +61,12 @@ private struct FunctionDelta
 
 private struct ToolDelta
 {
-    @JsonRequired uint index;
+    @JsonRequired
+    uint index;
     Text id;
-    @JsonRequired @JsonName("function") FunctionDelta functionPart;
+    @JsonRequired
+    @JsonName("function")
+    FunctionDelta functionPart;
 }
 
 package(flint.engine.ai) struct RouterChatStream

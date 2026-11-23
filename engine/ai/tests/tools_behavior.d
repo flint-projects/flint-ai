@@ -10,7 +10,8 @@ import std.meta : AliasSeq;
 
 private struct Arguments
 {
-    @Min(1) int quantity;
+    @Min(1)
+    int quantity;
 }
 
 private struct Answer

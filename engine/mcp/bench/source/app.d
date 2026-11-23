@@ -27,7 +27,9 @@ private string arguments() pure
 
 private struct EchoArgs
 {
-    @JsonRequired @Size(1024, 1024) Text input;
+    @JsonRequired
+    @Size(1024, 1024)
+    Text input;
 }
 
 private struct Block

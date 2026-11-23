@@ -29,7 +29,8 @@ private enum Stop : ubyte
 
 private struct Indexed
 {
-    @JsonRequired uint index;
+    @JsonRequired
+    uint index;
 }
 
 private struct Usage
@@ -40,20 +41,24 @@ private struct Usage
 
 private struct BlockDelta
 {
-    @JsonRequired Text type;
+    @JsonRequired
+    Text type;
     Text text;
     Text partial_json;
 }
 
 private struct DeltaEvent
 {
-    @JsonRequired uint index;
-    @JsonRequired BlockDelta delta;
+    @JsonRequired
+    uint index;
+    @JsonRequired
+    BlockDelta delta;
 }
 
 private struct BlockStart
 {
-    @JsonRequired Text type;
+    @JsonRequired
+    Text type;
     Text id;
     Text name;
     Text text;

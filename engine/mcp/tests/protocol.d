@@ -13,7 +13,8 @@ import flint.serde : JsonRequired;
 
 private struct Args
 {
-    @JsonRequired Text input;
+    @JsonRequired
+    Text input;
 }
 
 private final class Provider(size_t index)
@@ -140,7 +141,9 @@ private struct Sized
 {
     import flint.validate : Size;
 
-    @JsonRequired @Size(1, 16) Text input;
+    @JsonRequired
+    @Size(1, 16)
+    Text input;
 }
 
 private final class Counting

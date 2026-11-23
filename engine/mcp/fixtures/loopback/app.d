@@ -17,7 +17,9 @@ import std.stdio : writeln;
 
 private struct EchoInput
 {
-    @JsonRequired @Size(1, 1024) Text input;
+    @JsonRequired
+    @Size(1, 1024)
+    Text input;
 }
 
 private struct Block

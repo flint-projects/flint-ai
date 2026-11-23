@@ -12,24 +12,30 @@ import flint.serde.json_visit : JsonMemberName, visitJsonObject;
 
 private struct TextDelta
 {
-    @JsonRequired Text delta;
+    @JsonRequired
+    Text delta;
 }
 
 private struct ToolDelta
 {
-    @JsonRequired Text item_id;
-    @JsonRequired Text delta;
+    @JsonRequired
+    Text item_id;
+    @JsonRequired
+    Text delta;
 }
 
 private struct ToolDone
 {
-    @JsonRequired Text item_id;
-    @JsonRequired Text arguments;
+    @JsonRequired
+    Text item_id;
+    @JsonRequired
+    Text arguments;
 }
 
 private struct Item
 {
-    @JsonRequired Text type;
+    @JsonRequired
+    Text type;
     Text id;
     Text call_id;
     Text name;
@@ -38,13 +44,16 @@ private struct Item
 
 private struct ItemEvent
 {
-    @JsonRequired Item item;
+    @JsonRequired
+    Item item;
 }
 
 private struct Usage
 {
-    @JsonRequired uint input_tokens;
-    @JsonRequired uint output_tokens;
+    @JsonRequired
+    uint input_tokens;
+    @JsonRequired
+    uint output_tokens;
 }
 
 package(flint.engine.ai) Error responsesEvent(scope const(char)[] name, scope const(ubyte)[] json,

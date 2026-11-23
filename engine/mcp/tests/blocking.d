@@ -11,7 +11,8 @@ import flint.validate : NotBlank;
 
 private struct Word
 {
-    @NotBlank string word;
+    @NotBlank
+    string word;
 }
 
 private final class Shouter
