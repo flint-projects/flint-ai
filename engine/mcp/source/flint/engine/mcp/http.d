@@ -10,7 +10,7 @@ import flint.engine.mcp.modern : modernRevision;
 import flint.engine.mcp.legacy : legacyRevision;
 import flint.engine.mcp.protocol : Headers, Protocol, Reply;
 import flint.engine.mcp.types : McpOptions;
-import flint.engine.web : enableTls, Method, Request, RequestContext, Response, Server,
+import flint.engine.web : enableHttp2, enableTls, Method, Request, RequestContext, Response, Server,
     ServerOptions, StreamField, StreamMode, StreamRoute, StreamToken;
 
 @safe:
@@ -39,7 +39,10 @@ final class HttpEndpoint
         web.tlsCertificateFile = limits.tlsCertificateFile;
         web.tlsPrivateKeyFile = limits.tlsPrivateKeyFile;
         if (web.tlsCertificateFile.length != 0)
+        {
             enableTls();
+            enableHttp2(); // ALPN offers h2 on a TLS listener
+        }
         const started = website.start(web);
         if (started.code != Status.ok)
             return started;
