@@ -1,4 +1,4 @@
-"""flint mcp: the ADR-021 section 6 tools over MCP stdio, built on flint:mcp (Milestone 9, ADR-027)."""
+"""flint mcp: the ADR-021 section 6 tools over MCP stdio, built on flint:engine-mcp (Milestone 9, ADR-027)."""
 import json
 import subprocess
 import tempfile
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from test_flint_cli import FLINT, ROOT, codes, environment, flint_json, setUpModule  # noqa: F401
 
-NATIVE_LINKED = 'BEGIN FLINT NATIVE' in (ROOT / 'packages/web/dub.sdl').read_text()
+NATIVE_LINKED = 'BEGIN FLINT NATIVE' in (ROOT / 'packages/engine-web/dub.sdl').read_text()
 TOOLS = ['search_api', 'get_symbol', 'get_example', 'explain_error', 'describe_project', 'resolved_config',
          'dependency_graph', 'generate', 'build', 'test', 'check']
 
@@ -39,7 +39,7 @@ class Client:
         return self.process.wait(timeout=60)
 
 
-@unittest.skipUnless(NATIVE_LINKED, 'flint:mcp links the native HTTP providers, which are not installed')
+@unittest.skipUnless(NATIVE_LINKED, 'flint:engine-mcp links the native HTTP providers, which are not installed')
 class McpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
