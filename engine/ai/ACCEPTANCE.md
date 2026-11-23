@@ -3,7 +3,7 @@
 Source: `handoff/specs/tier-7/ai.md` section 7. Transport tests run the linked unittest binary under
 `tests/local_peer.py` (a loopback HTTP peer that speaks the five dialects with recorded,
 sanitized events); without `FLINT_AI_TEST_URL` they return early. No real AI provider is contacted.
-Compile-negative fixtures run with `python3 packages/engine-ai/negative/check.py dmd ldc2`.
+Compile-negative fixtures run with `python3 engine/ai/negative/check.py dmd ldc2`.
 
 | # | Section 7 item | Covering test or fixture | Status |
 | --- | --- | --- | --- |
@@ -53,4 +53,4 @@ No always-success or ignored-input paths found beyond the fixed default. All `Ch
 
 - `rtest acc-cloud ai both`: DMD rc=0, LDC rc=0; each linked binary under `tests/local_peer.py`: rc=0 ("Verified 30 scoped POSTs ... zero cancelled-request replays").
 - `negative/check.py dmd ldc2`: 5/5 rejected on each compiler.
-- `tools/gates.py --package ai --gate structural`: rc=0. `tools/quality.py --path packages/engine-ai`: 0 issues.
+- `tools/gates.py --package ai --gate structural`: rc=0. `tools/quality.py --path engine/ai`: 0 issues.

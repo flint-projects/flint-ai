@@ -1,0 +1,8 @@
+// flint-projects/flint-ai: the ai repo of Flint. Its packages keep the flint:* names; build them in a
+// workspace with the repos they depend on (python3 tools/workspace.py dub-root, in the flint repo).
+name "flint"
+description "Flint ai (boot-based repo)"
+license "Apache-2.0"
+targetType "none"
+subPackage "engine/ai"
+subPackage "engine/mcp"
