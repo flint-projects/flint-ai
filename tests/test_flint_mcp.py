@@ -5,9 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import os
+import sys
+sys.path.insert(0, str(Path(os.environ.get('FLINT_ROOT') or Path(__file__).resolve().parents[2]) / 'tests'))
+from flint_testing import FLINT_ROOT, package_dir, repo_dir  # noqa: E402,F401
 from test_flint_cli import FLINT, ROOT, codes, environment, flint_json, setUpModule  # noqa: F401
 
-NATIVE_LINKED = 'BEGIN FLINT NATIVE' in (ROOT / 'packages/engine-web/dub.sdl').read_text()
+NATIVE_LINKED = 'BEGIN FLINT NATIVE' in (package_dir('engine-web') / 'dub.sdl').read_text()
 TOOLS = ['search_api', 'get_symbol', 'get_example', 'explain_error', 'describe_project', 'resolved_config',
          'dependency_graph', 'generate', 'build', 'test', 'check']
 
