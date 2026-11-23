@@ -10,8 +10,8 @@ import flint.engine.mcp.modern : modernRevision;
 import flint.engine.mcp.legacy : legacyRevision;
 import flint.engine.mcp.protocol : Headers, Protocol, Reply;
 import flint.engine.mcp.types : McpOptions;
-import flint.engine.web : Method, Request, RequestContext, Response, Server, ServerOptions,
-    StreamField, StreamMode, StreamRoute, StreamToken;
+import flint.engine.web : enableTls, Method, Request, RequestContext, Response, Server,
+    ServerOptions, StreamField, StreamMode, StreamRoute, StreamToken;
 
 @safe:
 package(flint.engine.mcp):
@@ -38,6 +38,8 @@ final class HttpEndpoint
         web.maxStreamsPerConnection = limits.maxInFlight;
         web.tlsCertificateFile = limits.tlsCertificateFile;
         web.tlsPrivateKeyFile = limits.tlsPrivateKeyFile;
+        if (web.tlsCertificateFile.length != 0)
+            enableTls();
         const started = website.start(web);
         if (started.code != Status.ok)
             return started;
