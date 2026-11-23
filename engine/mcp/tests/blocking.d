@@ -1,10 +1,10 @@
-module flint.mcp.blocking_test;
+module flint.engine.mcp.blocking_test;
 
 import flint.arena : RequestArena, Status;
 import flint.conc : Context;
-import flint.mcp : BlockingToolResult, McpOptions, McpServer, McpTool, registerMcp;
-import flint.mcp.internal.blocking : BlockingRunner;
-import flint.mcp.internal.registry : Registry;
+import flint.engine.mcp : BlockingToolResult, McpOptions, McpServer, McpTool, registerMcp;
+import flint.engine.mcp.internal.blocking : BlockingRunner;
+import flint.engine.mcp.internal.registry : Registry;
 import flint.validate : NotBlank;
 
 @safe:

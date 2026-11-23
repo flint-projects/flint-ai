@@ -1,6 +1,6 @@
-module flint.ai.sse_behavior;
+module flint.engine.ai.sse_behavior;
 
-import flint.ai.sse : SseParser;
+import flint.engine.ai.sse : SseParser;
 import flint.arena : Error, Status;
 
 @safe:

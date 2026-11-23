@@ -1,9 +1,9 @@
-# flint:mcp acceptance traceability
+# flint:engine-mcp acceptance traceability
 
 Source: `handoff/specs/tier-7/mcp.md` section 7. Loopback evidence comes from the standalone app
 `fixtures/loopback/app.d` linked against the native HTTP providers (DMD and LDC) and driven by the
 independent peers `fixtures/loopback/check.py`, `mrtr_peer.py` and `header_peer.py`.
-Compile-negative fixtures run with `python3 packages/mcp/negative/check.py dmd ldc2`.
+Compile-negative fixtures run with `python3 packages/engine-mcp/negative/check.py dmd ldc2`.
 
 | # | Section 7 item | Covering test or fixture | Status |
 | --- | --- | --- | --- |
@@ -47,4 +47,4 @@ metadata only, as the spec requires (it never authorizes invocation).
 - `rtest acc-cloud mcp both`: DMD rc=0, LDC rc=0 (2 modules passed).
 - Loopback app built with DMD and LDC against the pinned curl/llhttp/nghttp2/OpenSSL archives; `check.py`, `mrtr_peer.py`, `header_peer.py`: rc=0 for both builds.
 - `negative/check.py dmd ldc2`: 2/2 rejected on each compiler.
-- `tools/gates.py --package mcp --gate structural`: rc=0. `tools/quality.py --path packages/mcp`: 0 issues.
+- `tools/gates.py --package mcp --gate structural`: rc=0. `tools/quality.py --path packages/engine-mcp`: 0 issues.

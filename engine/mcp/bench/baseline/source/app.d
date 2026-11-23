@@ -6,9 +6,9 @@ import core.stdc.stdio : printf;
 import core.time : MonoTime, ticksToNSecs;
 import flint.arena : Error, RequestArena, Status;
 import flint.conc : Context, Deadline;
-import flint.http : ClientOptions, HttpClient, HttpMethod, HttpRequestView, HttpStreamField;
-import flint.web : Method, Request, RequestContext, Server, ServerOptions, StreamField, StreamMode,
-    StreamRoute, StreamToken;
+import flint.engine.http : ClientOptions, HttpClient, HttpMethod, HttpRequestView, HttpStreamField;
+import flint.engine.web : Method, Request, RequestContext, Server, ServerOptions, StreamField,
+    StreamMode, StreamRoute, StreamToken;
 import std.process : ProcessPipes, Redirect, pipeProcess, wait;
 import std.stdio : stdin, stdout;
 

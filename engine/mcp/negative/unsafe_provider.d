@@ -2,7 +2,7 @@ module unsafe_provider;
 
 import flint.arena : RequestArena, Result;
 import flint.conc : Context;
-import flint.mcp : McpServer, McpTool, ToolResult, registerMcp;
+import flint.engine.mcp : McpServer, McpTool, ToolResult, registerMcp;
 
 @safe:
 

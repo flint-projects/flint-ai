@@ -1,15 +1,15 @@
-module flint.mcp.stdio_framing_test;
+module flint.engine.mcp.stdio_framing_test;
 
 import core.sys.posix.poll : POLLIN, poll, pollfd;
 import core.sys.posix.unistd : close, pipe, read;
 import flint.arena : Buffer, Error, RequestArena, Result, Status, Text;
 import flint.conc : Context, Deadline;
 import flint.conc.wait : waitUntil;
-import flint.mcp : McpOptions, McpTool, ToolResult;
-import flint.mcp.jsonrpc : Identity, decodeEnvelope;
-import flint.mcp.operations : Operations;
-import flint.mcp.protocol : Headers, Protocol;
-import flint.mcp.stdio : sendFrame;
+import flint.engine.mcp : McpOptions, McpTool, ToolResult;
+import flint.engine.mcp.jsonrpc : Identity, decodeEnvelope;
+import flint.engine.mcp.operations : Operations;
+import flint.engine.mcp.protocol : Headers, Protocol;
+import flint.engine.mcp.stdio : sendFrame;
 
 @safe:
 

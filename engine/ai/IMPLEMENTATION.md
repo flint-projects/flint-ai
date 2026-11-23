@@ -14,8 +14,8 @@ Run the real transport tests against the local fixture after pinning the HTTP pr
 
 ```sh
 python3 tools/native_build.py --profile http --target linux-x86_64-glibc --phase build --emit-dub
-python3 packages/ai/tests/local_peer.py dub test :ai --compiler=dmd
-python3 packages/ai/tests/local_peer.py dub test :ai --compiler=ldc2
+python3 packages/engine-ai/tests/local_peer.py dub test :ai --compiler=dmd
+python3 packages/engine-ai/tests/local_peer.py dub test :ai --compiler=ldc2
 python3 tools/gates.py --package ai --gate structural
 ```
 

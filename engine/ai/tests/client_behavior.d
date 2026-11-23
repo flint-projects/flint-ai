@@ -1,6 +1,6 @@
-module flint.ai.client_behavior;
+module flint.engine.ai.client_behavior;
 
-import flint.ai : AiOptions, ChatClient, ChatEvent, ChatMessage, ChatOptions, EventConsumer,
+import flint.engine.ai : AiOptions, ChatClient, ChatEvent, ChatMessage, ChatOptions, EventConsumer,
     EventKind, FailureKind, Provider, Role, RouterDialect;
 import flint.arena : Error, RequestArena, Status;
 import flint.conc : CancelSource, Context, Deadline;
@@ -235,7 +235,7 @@ unittest
 @("regression: default ChatOptions encode a request because temperature defaults to 0, not NaN")
 unittest
 {
-    import flint.ai.request : Wire, encodeRequest;
+    import flint.engine.ai.request : Wire, encodeRequest;
 
     ChatOptions options;
     assert(options.temperature == 0);

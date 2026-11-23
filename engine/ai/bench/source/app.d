@@ -1,6 +1,6 @@
 module app;
 
-import flint.ai.sse : SseParser;
+import flint.engine.ai.sse : SseParser;
 import flint.arena : Error, Status;
 import replay : measure, record;
 

@@ -2,7 +2,7 @@
 /// client's project directory and returns its document, as text and as structured content.
 module flint_mcp.tools;
 
-import flint.mcp : BlockingToolResult, McpTool;
+import flint.engine.mcp : BlockingToolResult, McpTool;
 import flint.validate : NotBlank;
 
 @safe:

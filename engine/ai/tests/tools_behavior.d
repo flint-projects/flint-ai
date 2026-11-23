@@ -1,6 +1,6 @@
-module flint.ai.tools_behavior;
+module flint.engine.ai.tools_behavior;
 
-import flint.ai : Tool, ToolDefinition, describeTools, dispatchTool;
+import flint.engine.ai : Tool, ToolDefinition, describeTools, dispatchTool;
 import flint.arena : Error, RequestArena, Status;
 import flint.conc : Context;
 import flint.validate : Min;
@@ -77,10 +77,10 @@ private struct Destructive
 @("tool_authorization: a model-emitted destructive call is only an event until the app dispatches it")
 unittest
 {
-    import flint.ai.events : EventRun;
-    import flint.ai.providers.openai : responsesEvent;
-    import flint.ai.tool_calls : ArgumentBlock;
-    import flint.ai.types : ChatEvent, EventKind;
+    import flint.engine.ai.events : EventRun;
+    import flint.engine.ai.providers.openai : responsesEvent;
+    import flint.engine.ai.tool_calls : ArgumentBlock;
+    import flint.engine.ai.types : ChatEvent, EventKind;
 
     Destructive tools;
     auto run = EventRun(new ArgumentBlock[8]);

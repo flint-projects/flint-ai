@@ -5,7 +5,7 @@ import core.thread.osthread : Thread;
 import core.time : dur;
 import flint.arena : Buffer, Error, RequestArena, Result, Status, Text;
 import flint.conc : Context, Deadline;
-import flint.mcp : McpClient, McpClientOptions, McpOptions, McpProcessOptions, McpResource,
+import flint.engine.mcp : McpClient, McpClientOptions, McpOptions, McpProcessOptions, McpResource,
     McpServer, McpTool, ProtocolRevision, ToolResult, Transport, registerMcp;
 import flint.serde : JsonRequired, encodeJson;
 import flint.validate : Size;

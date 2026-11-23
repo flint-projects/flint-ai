@@ -1,6 +1,6 @@
 module flint_ai_negative.duplicate_tools;
 
-import flint.ai : Tool, dispatchTool;
+import flint.engine.ai : Tool, dispatchTool;
 import flint.arena : Error, RequestArena;
 import flint.conc : Context;
 import std.meta : AliasSeq;

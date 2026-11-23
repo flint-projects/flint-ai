@@ -158,7 +158,7 @@ class Peer(BaseHTTPRequestHandler):
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("provide the linked flint:ai unittest command")
+        raise SystemExit("provide the linked flint:engine-ai unittest command")
     with ThreadingHTTPServer(("127.0.0.1", 0), Peer) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()

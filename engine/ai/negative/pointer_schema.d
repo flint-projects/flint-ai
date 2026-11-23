@@ -1,6 +1,6 @@
 module flint_ai_negative.pointer_schema;
 
-import flint.ai : jsonSchema;
+import flint.engine.ai : jsonSchema;
 import flint.arena : RequestArena;
 
 @safe:

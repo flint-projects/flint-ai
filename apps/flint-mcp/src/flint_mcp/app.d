@@ -4,7 +4,7 @@ module flint_mcp.app;
 import flint_mcp.tools : FlintTools;
 import flint.arena : Status;
 import flint.conc : Context;
-import flint.mcp : McpOptions, McpServer, registerMcp;
+import flint.engine.mcp : McpOptions, McpServer, registerMcp;
 
 @safe:
 

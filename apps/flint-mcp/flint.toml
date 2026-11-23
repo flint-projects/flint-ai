@@ -3,7 +3,7 @@ name = "flint-mcp"
 version = "0.9.0"
 flint = "1.0"
 type = "executable"
-description = "flint mcp: the Flint knowledge and build loop as an MCP server, built on flint:mcp."
+description = "flint mcp: the Flint knowledge and build loop as an MCP server, built on flint:engine-mcp."
 license = "Apache-2.0"
 
 [build]
@@ -12,7 +12,7 @@ executable = "flint-mcp"
 [dependencies]
 "flint:arena" = {}
 "flint:conc" = {}
-"flint:mcp" = {}
+"flint:engine-mcp" = {}
 "flint:os" = {}
 "flint:serde" = {}
 "flint:validate" = {}

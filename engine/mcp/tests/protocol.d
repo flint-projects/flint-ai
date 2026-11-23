@@ -1,12 +1,12 @@
-module flint.mcp.protocol_test;
+module flint.engine.mcp.protocol_test;
 
 import flint.arena : Buffer, Error, RequestArena, Result, Status, Text;
 import flint.conc : Context;
-import flint.mcp : McpOptions, McpServer, McpTool, ToolResult, registerMcp;
-import flint.mcp.header_values : encodeHeader, matchesHeader;
-import flint.mcp.jsonrpc : decodeEnvelope, isString, member;
-import flint.mcp.params : EncodedField, ParamRules, maximumHeaders;
-import flint.mcp.protocol : Headers, Protocol;
+import flint.engine.mcp : McpOptions, McpServer, McpTool, ToolResult, registerMcp;
+import flint.engine.mcp.header_values : encodeHeader, matchesHeader;
+import flint.engine.mcp.jsonrpc : decodeEnvelope, isString, member;
+import flint.engine.mcp.params : EncodedField, ParamRules, maximumHeaders;
+import flint.engine.mcp.protocol : Headers, Protocol;
 import flint.serde : JsonRequired;
 
 @safe:

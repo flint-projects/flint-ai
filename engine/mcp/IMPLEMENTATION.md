@@ -16,7 +16,7 @@ Prepare the pinned HTTP and Web dependencies before running the linked tests:
 dub test :mcp --compiler=dmd
 dub test :mcp --compiler=ldc2
 python3 tools/gates.py --package mcp --gate structural
-python3 tools/quality.py --path packages/mcp
+python3 tools/quality.py --path packages/engine-mcp
 ```
 
 The standalone app in `fixtures/loopback` exercises both registered revisions. With the app linked to the native HTTP providers, run its executable through `check.py`, `mrtr_peer.py` and `header_peer.py`. The independent peers check framing and limits, stdout and stderr handling, cancellation, version fallback, tool validation, header encoding and elicitation. The DMD, LDC and Linux LDC ASan receipts are indexed in `artifacts/tasks/m5-mcp/final-correctness.json`.

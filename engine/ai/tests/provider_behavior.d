@@ -1,12 +1,12 @@
-module flint.ai.provider_behavior;
+module flint.engine.ai.provider_behavior;
 
-import flint.ai.events : EventRun;
-import flint.ai.providers.anthropic : AnthropicStream;
-import flint.ai.providers.gemini : GeminiStream;
-import flint.ai.providers.openai : responsesEvent;
-import flint.ai.providers.openrouter : RouterChatStream, routerResponsesEvent;
-import flint.ai.tool_calls : ArgumentBlock;
-import flint.ai.types : ChatEvent, EventConsumer, EventKind, FailureKind;
+import flint.engine.ai.events : EventRun;
+import flint.engine.ai.providers.anthropic : AnthropicStream;
+import flint.engine.ai.providers.gemini : GeminiStream;
+import flint.engine.ai.providers.openai : responsesEvent;
+import flint.engine.ai.providers.openrouter : RouterChatStream, routerResponsesEvent;
+import flint.engine.ai.tool_calls : ArgumentBlock;
+import flint.engine.ai.types : ChatEvent, EventConsumer, EventKind, FailureKind;
 import flint.arena : Error, RequestArena, Status;
 
 @safe:
@@ -366,7 +366,7 @@ unittest
 @("limits: tool arguments cap at 1 MiB across calls and 16 concurrent calls per request")
 unittest
 {
-    import flint.ai.tool_calls : ToolCalls, maxArgumentBlocks;
+    import flint.engine.ai.tool_calls : ToolCalls, maxArgumentBlocks;
 
     auto blocks = new ArgumentBlock[maxArgumentBlocks];
     auto calls = ToolCalls(blocks);

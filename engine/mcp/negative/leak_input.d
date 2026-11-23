@@ -2,7 +2,7 @@ module leak_input;
 
 import flint.arena : Buffer, RequestArena, Result;
 import flint.conc : Context;
-import flint.mcp : McpElicitation;
+import flint.engine.mcp : McpElicitation;
 
 @safe:
 
