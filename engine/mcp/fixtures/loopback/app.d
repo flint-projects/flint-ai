@@ -10,6 +10,7 @@ import flint.engine.mcp : McpClient, McpClientOptions, McpOptions, McpProcessOpt
 import flint.serde : JsonRequired, encodeJson;
 import flint.validate : Size;
 import std.conv : to;
+import std.path : isAbsolute;
 import std.stdio : writeln;
 
 @safe:
@@ -171,7 +172,8 @@ private Error connectFixture(ref McpClient client, string endpoint, string mode,
     };
     if (mode == "bounded-mrtr")
         options.maxInputRounds = 1;
-    if (endpoint[0] != '/')
+    // An absolute executable path (a Windows drive or UNC path too) starts a stdio child; anything else is a URL.
+    if (!isAbsolute(endpoint))
         return client.connectWith(endpoint, options, context);
 
     const childMode = mode == "fallback" ? "legacy" : "dual";

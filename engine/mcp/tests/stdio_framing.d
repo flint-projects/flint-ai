@@ -1,7 +1,26 @@
 module flint.engine.mcp.stdio_framing_test;
 
-import core.sys.posix.poll : POLLIN, poll, pollfd;
-import core.sys.posix.unistd : close, pipe, read;
+version (Posix)
+{
+    import core.sys.posix.poll : POLLIN, poll, pollfd;
+    import core.sys.posix.unistd : close, pipe, read;
+}
+else version (Windows)
+{
+    import core.stdc.stdint : intptr_t;
+    import core.sys.windows.winbase : PeekNamedPipe, Sleep;
+    import core.sys.windows.windef : DWORD, HANDLE;
+
+    private extern (C) @system nothrow @nogc
+    {
+        int _pipe(int* descriptors, uint bytes, int mode);
+        int _close(int descriptor);
+        int _read(int descriptor, void* output, uint count);
+        intptr_t _get_osfhandle(int descriptor);
+    }
+
+    private alias close = _close;
+}
 import flint.arena : Buffer, Error, RequestArena, Result, Status, Text;
 import flint.conc : Context, Deadline;
 import flint.conc.wait : waitUntil;
@@ -44,7 +63,10 @@ private final class LargeReply
 // SAFETY: The test owns both descriptors of the new pipe.
 private bool openPipe(ref int[2] descriptors) @trusted nothrow @nogc
 {
-    return pipe(descriptors) == 0;
+    version (Windows)
+        return _pipe(descriptors.ptr, 64 * 1024, 0x8000) == 0; // _O_BINARY
+    else
+        return pipe(descriptors) == 0;
 }
 
 // SAFETY: Closes a test-owned descriptor once.
@@ -56,10 +78,28 @@ private void closeFile(int descriptor) @trusted nothrow @nogc
 // SAFETY: Bounded poll and read into a test-owned slice.
 private long readSome(int descriptor, scope ubyte[] output, int millis) @trusted nothrow @nogc
 {
-    pollfd watch = pollfd(descriptor, POLLIN, 0);
-    if (poll(&watch, 1, millis) <= 0)
+    version (Windows)
+    {
+        // Anonymous pipes cannot be polled: peek until bytes wait, then read no more than are there.
+        auto pipe = cast(HANDLE) _get_osfhandle(descriptor);
+        foreach (_; 0 .. millis + 1)
+        {
+            DWORD waiting;
+            if (!PeekNamedPipe(pipe, null, 0, null, &waiting, null))
+                return 0;
+            if (waiting != 0)
+                return _read(descriptor, output.ptr, cast(uint)(waiting < output.length ? waiting : output.length));
+            Sleep(1);
+        }
         return 0;
-    return read(descriptor, output.ptr, output.length);
+    }
+    else
+    {
+        pollfd watch = pollfd(descriptor, POLLIN, 0);
+        if (poll(&watch, 1, millis) <= 0)
+            return 0;
+        return read(descriptor, output.ptr, output.length);
+    }
 }
 
 private bool waitFor(scope bool delegate() @safe nothrow @nogc ready) nothrow @nogc
